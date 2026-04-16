@@ -7,6 +7,7 @@ Run with:
     python examples/basic_usage.py
 """
 
+import os
 import sys
 import time
 
@@ -14,14 +15,22 @@ import allstak
 
 # ---------------------------------------------------------------------------
 # 1. Initialize the SDK
+#
+# Set ALLSTAK_API_KEY (and optionally ALLSTAK_HOST) in your environment
+# before running this example. Never commit real API keys to source control.
 # ---------------------------------------------------------------------------
 
+api_key = os.environ.get("ALLSTAK_API_KEY")
+if not api_key:
+    sys.stderr.write("ALLSTAK_API_KEY is not set — aborting example.\n")
+    sys.exit(1)
+
 allstak.init(
-    api_key="ask_live_o5fmoedqr14vxm47rltn9frjpazjszh7",
-    host="http://localhost:8080",
-    environment="development",
-    release="0.1.0",
-    debug=True,
+    api_key=api_key,
+    host=os.environ.get("ALLSTAK_HOST", "https://ingest.allstak.dev"),
+    environment=os.environ.get("ALLSTAK_ENVIRONMENT", "development"),
+    release=os.environ.get("ALLSTAK_RELEASE", "0.2.0"),
+    debug=bool(os.environ.get("ALLSTAK_DEBUG")),
 )
 print("✓ AllStak SDK initialized")
 

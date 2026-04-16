@@ -48,13 +48,15 @@ from .client import (
     init,
 )
 from .config import AllStakConfig
-from .models.errors import UserContext
+from .models.breadcrumb import Breadcrumb
+from .models.errors import RequestContext, UserContext
 from .models.logs import LOG_LEVELS
 from .models.http_requests import HttpRequestItem
 from .models.replay import ReplayEvent, ReplayPayload
 from .models.heartbeat import HeartbeatPayload
+from .modules.tracing import Span, TracingModule
 
-__version__ = "0.1.0"
+__version__ = "0.2.0"
 
 __all__ = [
     "__version__",
@@ -65,14 +67,20 @@ __all__ = [
     "AllStakConfig",
     "AllStakClient",
     # Models
+    "Breadcrumb",
     "UserContext",
+    "RequestContext",
     "HttpRequestItem",
     "ReplayEvent",
     "ReplayPayload",
     "HeartbeatPayload",
+    "Span",
+    "TracingModule",
     # Module-level shortcuts
     "capture_exception",
     "capture_error",
+    "add_breadcrumb",
+    "clear_breadcrumbs",
     "set_user",
     "clear_user",
     "flush",
@@ -81,6 +89,14 @@ __all__ = [
     "replay",
     "cron",
     "flags",
+    "tracing",
+    "shutdown",
+    "database",
+    "start_span",
+    "get_trace_id",
+    "set_trace_id",
+    "get_current_span_id",
+    "reset_trace",
 ]
 
 
@@ -154,6 +170,30 @@ def capture_error(
     )
 
 
+def add_breadcrumb(
+    type: str,
+    message: str,
+    level: Optional[str] = None,
+    data: Optional[Dict[str, Any]] = None,
+) -> None:
+    """
+    Add a breadcrumb to the internal buffer.
+
+    Breadcrumbs are attached to the next captured error and then cleared.
+    No-op if :func:`init` has not been called.
+    """
+    client = get_client()
+    if client is not None:
+        client.add_breadcrumb(type, message, level, data)
+
+
+def clear_breadcrumbs() -> None:
+    """Clear all breadcrumbs from the buffer."""
+    client = get_client()
+    if client is not None:
+        client.clear_breadcrumbs()
+
+
 def set_user(
     user_id: Optional[str] = None,
     email: Optional[str] = None,
@@ -177,6 +217,13 @@ def flush() -> None:
     client = get_client()
     if client:
         client.flush()
+
+
+def shutdown() -> None:
+    """Flush all pending events and shut down background threads."""
+    client = get_client()
+    if client:
+        client._shutdown()
 
 
 # ---------------------------------------------------------------------------
@@ -227,8 +274,18 @@ class _CronProxy:
     def __getattr__(self, name: str) -> Any:
         client = get_client()
         if client is None:
+            if name == "job":
+                # Return a no-op context manager so `with allstak.cron.job(...):`
+                # keeps working when the SDK is not initialized.
+                from contextlib import contextmanager
+
+                @contextmanager
+                def _noop_job(*args: Any, **kwargs: Any) -> Any:
+                    yield None
+                return _noop_job
+
             def _noop(*args: Any, **kwargs: Any) -> None:
-                pass
+                return None
             return _noop
         return getattr(client.cron, name)
 
@@ -245,9 +302,106 @@ class _FlagsProxy:
         return getattr(client.flags, name)
 
 
+class _TracingProxy:
+    """Proxy to the TracingModule on the singleton client."""
+
+    def __getattr__(self, name: str) -> Any:
+        client = get_client()
+        if client is None:
+            def _noop(*args: Any, **kwargs: Any) -> None:
+                pass
+            return _noop
+        return getattr(client.tracing, name)
+
+
+class _DatabaseProxy:
+    """Proxy to the DatabaseModule on the singleton client."""
+
+    def __getattr__(self, name: str) -> Any:
+        client = get_client()
+        if client is None:
+            def _noop(*args: Any, **kwargs: Any) -> None:
+                pass
+            return _noop
+        return getattr(client.database, name)
+
+
 # Singleton proxy instances
 log = _LogProxy()
 http = _HttpProxy()
 replay = _ReplayProxy()
 cron = _CronProxy()
 flags = _FlagsProxy()
+tracing = _TracingProxy()
+database = _DatabaseProxy()
+
+
+# ---------------------------------------------------------------------------
+# Module-level tracing shortcuts
+# ---------------------------------------------------------------------------
+
+def start_span(
+    operation: str,
+    *,
+    description: str = "",
+    tags: Optional[Dict[str, Any]] = None,
+) -> "Span":
+    """
+    Start a new distributed tracing span.
+
+    Can be used as a context manager::
+
+        with allstak.start_span("db.query") as span:
+            span.set_tag("db.type", "postgresql")
+            result = db.execute(query)
+
+    No-op if :func:`init` has not been called (returns a span that
+    finishes silently).
+    """
+    client = get_client()
+    if client is None:
+        # Return a dummy span that does nothing
+        from .modules.tracing import Span as _Span
+        return _Span(
+            trace_id="",
+            span_id="",
+            parent_span_id="",
+            operation=operation,
+            description=description,
+            service="",
+            environment="",
+            tags=tags or {},
+            start_time_millis=0,
+            on_finish=lambda s: None,
+        )
+    return client.start_span(operation, description=description, tags=tags)
+
+
+def get_trace_id() -> str:
+    """Get the current trace ID (creates one if none exists)."""
+    client = get_client()
+    if client is None:
+        return ""
+    return client.get_trace_id()
+
+
+def set_trace_id(trace_id: str) -> None:
+    """Set the trace ID explicitly (e.g. from an incoming request header)."""
+    client = get_client()
+    if client is not None:
+        client.set_trace_id(trace_id)
+
+
+def get_current_span_id() -> Optional[str]:
+    """Get the current active span ID, or None."""
+    client = get_client()
+    if client is None:
+        return None
+    return client.get_current_span_id()
+
+
+def reset_trace() -> None:
+    """Reset trace context (trace ID and span stack)."""
+    client = get_client()
+    if client is not None:
+        client.reset_trace()

@@ -167,7 +167,9 @@ class CronModule:
             )
             return False
         except AllStakAuthError:
-            raise
+            # SDK is disabled (401). Never raise into the host application.
+            logger.debug("[AllStak] Cron ping skipped — SDK disabled (invalid API key)")
+            return False
         except AllStakTransportError as exc:
             logger.debug("[AllStak] Cron ping transport error: %s", exc)
             return False

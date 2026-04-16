@@ -4,26 +4,56 @@ build-backend = "hatchling.build"
 
 [project]
 name = "allstak"
-version = "0.1.0"
-description = "Official Python SDK for AllStak — observability, error tracking, logs, and more"
+version = "0.2.0"
+description = "Official Python SDK for AllStak — error tracking, structured logs, HTTP + DB monitoring, distributed tracing, and cron monitoring with first-class FastAPI, Django and Flask support"
 readme = "README.md"
 requires-python = ">=3.9"
 license = { text = "MIT" }
 authors = [{ name = "AllStak", email = "sdk@allstak.dev" }]
-keywords = ["observability", "error-tracking", "logging", "monitoring", "apm"]
+maintainers = [{ name = "AllStak", email = "sdk@allstak.dev" }]
+keywords = [
+    "observability",
+    "error-tracking",
+    "logging",
+    "monitoring",
+    "apm",
+    "tracing",
+    "fastapi",
+    "django",
+    "flask",
+    "sqlalchemy",
+]
 classifiers = [
     "Development Status :: 4 - Beta",
     "Intended Audience :: Developers",
+    "Intended Audience :: System Administrators",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python",
     "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3 :: Only",
     "Programming Language :: Python :: 3.9",
     "Programming Language :: Python :: 3.10",
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Software Development :: Bug Tracking",
+    "Topic :: Software Development :: Libraries :: Python Modules",
+    "Topic :: System :: Logging",
+    "Topic :: System :: Monitoring",
+    "Typing :: Typed",
 ]
 
 dependencies = [
     "httpx>=0.25.0",
 ]
+
+[project.urls]
+Homepage = "https://allstak.dev"
+Documentation = "https://allstak.dev/docs/sdks/python"
+Repository = "https://github.com/allstak/allstak-python"
+Issues = "https://github.com/allstak/allstak-python/issues"
+Changelog = "https://github.com/allstak/allstak-python/blob/main/CHANGELOG.md"
 
 [project.optional-dependencies]
 dev = [
@@ -33,11 +63,39 @@ dev = [
     "respx>=0.20",
     "python-dotenv>=1.0",
 ]
+fastapi = ["starlette>=0.27"]
 django = ["django>=3.2"]
 flask = ["flask>=2.0"]
+sqlalchemy = ["sqlalchemy>=1.4"]
+all = [
+    "starlette>=0.27",
+    "django>=3.2",
+    "flask>=2.0",
+    "sqlalchemy>=1.4",
+]
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/allstak"]
+
+[tool.hatch.build.targets.sdist]
+include = [
+    "/src/allstak",
+    "/tests",
+    "/examples/basic_usage.py",
+    "/examples/curl-examples.md",
+    "/README.md",
+    "/CHANGELOG.md",
+    "/pyproject.toml",
+]
+exclude = [
+    "/.env*",
+    "/allstak-python.iml",
+    "/e2e_*.py",
+    "/heavy_e2e_*.py",
+    "/docs",
+    "**/__pycache__",
+    "**/*.pyc",
+]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

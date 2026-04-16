@@ -30,6 +30,31 @@ class UserContext:
 
 
 @dataclass
+class RequestContext:
+    """Optional HTTP request context attached to an error event."""
+
+    method: Optional[str] = None
+    path: Optional[str] = None
+    host: Optional[str] = None
+    status_code: Optional[int] = None
+    user_agent: Optional[str] = None
+
+    def to_dict(self) -> Dict[str, Any]:
+        out: Dict[str, Any] = {}
+        if self.method is not None:
+            out["method"] = self.method
+        if self.path is not None:
+            out["path"] = self.path
+        if self.host is not None:
+            out["host"] = self.host
+        if self.status_code is not None:
+            out["statusCode"] = self.status_code
+        if self.user_agent is not None:
+            out["userAgent"] = self.user_agent
+        return out
+
+
+@dataclass
 class ErrorPayload:
     """
     Payload for ``POST /ingest/v1/errors``.
@@ -62,8 +87,17 @@ class ErrorPayload:
     user: Optional[UserContext] = None
     """User context at the time of the error."""
 
+    request_context: Optional[RequestContext] = None
+    """HTTP request context at the time of the error (auto-populated by framework integrations)."""
+
+    trace_id: Optional[str] = None
+    """Distributed trace id correlated with this error."""
+
     metadata: Dict[str, Any] = field(default_factory=dict)
     """Arbitrary key-value context."""
+
+    breadcrumbs: Optional[List[Dict[str, Any]]] = None
+    """Breadcrumbs captured before this error."""
 
     def to_dict(self) -> Dict[str, Any]:
         if self.level not in ERROR_LEVELS:
@@ -85,8 +119,14 @@ class ErrorPayload:
             payload["release"] = self.release
         if self.session_id:
             payload["sessionId"] = self.session_id
+        if self.trace_id:
+            payload["traceId"] = self.trace_id
         if self.user:
             payload["user"] = self.user.to_dict()
+        if self.request_context:
+            payload["requestContext"] = self.request_context.to_dict()
         if self.metadata:
             payload["metadata"] = self.metadata
+        if self.breadcrumbs:
+            payload["breadcrumbs"] = self.breadcrumbs
         return payload

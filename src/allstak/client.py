@@ -43,13 +43,15 @@ import threading
 from typing import Any, Dict, List, Optional
 
 from .config import AllStakConfig
-from .models.errors import UserContext
+from .models.errors import RequestContext, UserContext
 from .modules.cron import CronModule, JobHandle
+from .modules.database import DatabaseModule, enable_db_auto_instrumentation
 from .modules.errors import ErrorModule
 from .modules.flags import FeatureFlagModule
 from .modules.http_monitor import HttpMonitorModule
 from .modules.logs import LogModule
 from .modules.replay import ReplayModule, ReplaySession
+from .modules.tracing import Span, TracingModule
 from .transport import AllStakAuthError, HttpTransport
 
 logger = logging.getLogger("allstak.sdk")
@@ -92,9 +94,27 @@ class AllStakClient:
         self._replay = ReplayModule(self._transport, config)
         self._cron = CronModule(self._transport, config)
         self._flags = FeatureFlagModule(config)
+        self._tracing = TracingModule(self._transport, config)
+        self._database = DatabaseModule(self._transport, config)
 
         # Best-effort flush on interpreter exit
         atexit.register(self._shutdown)
+
+        # Wire automatic breadcrumb instrumentation
+        if config.auto_breadcrumbs:
+            try:
+                from .integrations.auto_breadcrumbs import instrument_requests, instrument_logging
+                instrument_requests(self.add_breadcrumb)
+                instrument_logging(self.add_breadcrumb)
+                self._logs.set_on_log_breadcrumb(self.add_breadcrumb)
+            except Exception as e:
+                logger.debug("[AllStak] auto-breadcrumb instrumentation failed: %s", e)
+
+        # Wire automatic database instrumentation
+        try:
+            enable_db_auto_instrumentation(self._database)
+        except Exception as e:
+            logger.debug("[AllStak] DB auto-instrumentation failed: %s", e)
 
         logger.debug("[AllStak] SDK initialized (host=%s, debug=%s)", config.host, config.debug)
 
@@ -127,6 +147,59 @@ class AllStakClient:
         """Feature flags module — ``allstak.flags.get()``."""
         return self._flags
 
+    @property
+    def tracing(self) -> TracingModule:
+        """Tracing module — ``allstak.tracing.start_span()``."""
+        return self._tracing
+
+    @property
+    def database(self) -> DatabaseModule:
+        """Database monitoring module — ``allstak.database.record()``."""
+        return self._database
+
+    # ------------------------------------------------------------------
+    # Distributed Tracing
+    # ------------------------------------------------------------------
+
+    def start_span(
+        self,
+        operation: str,
+        *,
+        description: str = "",
+        tags: Optional[Dict[str, Any]] = None,
+    ) -> Span:
+        """
+        Start a new span. Automatically parented to the current active span.
+
+        Can be used as a context manager::
+
+            with allstak.start_span("db.query", description="SELECT users") as span:
+                span.set_tag("db.type", "postgresql")
+                result = db.execute(query)
+
+        Returns the Span object.
+        """
+        if self._disabled:
+            # Return a no-op span that does nothing
+            return self._tracing.start_span(operation, description=description, tags=tags)
+        return self._tracing.start_span(operation, description=description, tags=tags)
+
+    def get_trace_id(self) -> str:
+        """Get the current trace ID (creates one if none exists)."""
+        return self._tracing.get_trace_id()
+
+    def set_trace_id(self, trace_id: str) -> None:
+        """Set the trace ID explicitly (e.g. from an incoming request header)."""
+        self._tracing.set_trace_id(trace_id)
+
+    def get_current_span_id(self) -> Optional[str]:
+        """Get the current active span ID, or None if no span is active."""
+        return self._tracing.get_current_span_id()
+
+    def reset_trace(self) -> None:
+        """Reset trace context (trace ID and span stack)."""
+        self._tracing.reset_trace()
+
     # ------------------------------------------------------------------
     # Error capture
     # ------------------------------------------------------------------
@@ -140,6 +213,7 @@ class AllStakClient:
         release: Optional[str] = None,
         session_id: Optional[str] = None,
         user: Optional[UserContext] = None,
+        request_context: Optional[RequestContext] = None,
         metadata: Optional[Dict[str, Any]] = None,
     ) -> Optional[str]:
         """
@@ -154,6 +228,15 @@ class AllStakClient:
         if self._disabled:
             return None
         try:
+            # Auto-attach trace context to error metadata
+            enriched_meta = dict(metadata) if metadata else {}
+            trace_id = self._tracing.get_trace_id()
+            span_id = self._tracing.get_current_span_id()
+            if trace_id and "traceId" not in enriched_meta:
+                enriched_meta["traceId"] = trace_id
+            if span_id and "spanId" not in enriched_meta:
+                enriched_meta["spanId"] = span_id
+
             return self._errors.capture_exception(
                 exc,
                 level=level,
@@ -161,7 +244,9 @@ class AllStakClient:
                 release=release,
                 session_id=session_id,
                 user=user,
-                metadata=metadata,
+                request_context=request_context,
+                trace_id=trace_id or None,
+                metadata=enriched_meta if enriched_meta else None,
             )
         except AllStakAuthError:
             self._handle_auth_error()
@@ -192,6 +277,15 @@ class AllStakClient:
         if self._disabled:
             return None
         try:
+            # Auto-attach trace context to error metadata
+            enriched_meta = dict(metadata) if metadata else {}
+            trace_id = self._tracing.get_trace_id()
+            span_id = self._tracing.get_current_span_id()
+            if trace_id and "traceId" not in enriched_meta:
+                enriched_meta["traceId"] = trace_id
+            if span_id and "spanId" not in enriched_meta:
+                enriched_meta["spanId"] = span_id
+
             return self._errors.capture_error(
                 exception_class,
                 message,
@@ -201,7 +295,7 @@ class AllStakClient:
                 release=release,
                 session_id=session_id,
                 user=user,
-                metadata=metadata,
+                metadata=enriched_meta if enriched_meta else None,
             )
         except AllStakAuthError:
             self._handle_auth_error()
@@ -209,6 +303,36 @@ class AllStakClient:
         except Exception as e:
             logger.debug("[AllStak] capture_error swallowed: %s", e)
             return None
+
+    # ------------------------------------------------------------------
+    # Breadcrumbs
+    # ------------------------------------------------------------------
+
+    def add_breadcrumb(
+        self,
+        type: str,
+        message: str,
+        level: Optional[str] = None,
+        data: Optional[Dict[str, Any]] = None,
+    ) -> None:
+        """
+        Add a breadcrumb to the internal ring buffer.
+
+        Breadcrumbs are attached to the next captured error event
+        and then cleared. Max 50 breadcrumbs are kept; oldest are dropped.
+
+        :param type: Category ("http", "log", "ui", "navigation", "query", "default").
+        :param message: Human-readable description.
+        :param level: Severity ("info", "warn", "error", "debug"). Defaults to "info".
+        :param data: Optional key-value metadata.
+        """
+        if self._disabled:
+            return
+        self._errors.add_breadcrumb(type, message, level, data)
+
+    def clear_breadcrumbs(self) -> None:
+        """Clear all breadcrumbs from the buffer."""
+        self._errors.clear_breadcrumbs()
 
     # ------------------------------------------------------------------
     # User context
@@ -237,6 +361,8 @@ class AllStakClient:
             self._logs.flush()
             self._http.flush()
             self._replay.flush()
+            self._tracing.flush()
+            self._database.flush()
         except Exception as e:
             logger.debug("[AllStak] flush() error: %s", e)
 
@@ -246,6 +372,8 @@ class AllStakClient:
             self._logs.shutdown()
             self._http.shutdown()
             self._replay.shutdown()
+            self._tracing.shutdown()
+            self._database.shutdown()
         except Exception:
             pass
 
@@ -282,6 +410,8 @@ def init(
     connect_timeout: float = 3.0,
     read_timeout: float = 3.0,
     max_retries: int = 5,
+    auto_breadcrumbs: bool = True,
+    max_breadcrumbs: int = 50,
 ) -> AllStakClient:
     """
     Initialize the AllStak SDK.
@@ -326,6 +456,8 @@ def init(
             connect_timeout=connect_timeout,
             read_timeout=read_timeout,
             max_retries=max_retries,
+            auto_breadcrumbs=auto_breadcrumbs,
+            max_breadcrumbs=max_breadcrumbs,
         )
         _client = AllStakClient(config)
         _initialized_once = True

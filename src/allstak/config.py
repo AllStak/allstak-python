@@ -48,6 +48,13 @@ class AllStakConfig:
     max_retries: int = 5
     """Maximum send attempts before discarding an event."""
 
+    # --- Auto breadcrumbs ---
+    auto_breadcrumbs: bool = True
+    """When True, automatically instrument ``requests`` library and logging for breadcrumbs."""
+
+    max_breadcrumbs: int = 50
+    """Maximum number of breadcrumbs kept in the ring buffer."""
+
     @classmethod
     def from_env(cls) -> "AllStakConfig":
         """

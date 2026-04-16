@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import logging
-from typing import Any, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional
 
 from ..buffer import FlushBuffer
 from ..config import AllStakConfig
@@ -13,6 +13,9 @@ from ..transport import AllStakAuthError, AllStakTransportError, HttpTransport
 logger = logging.getLogger("allstak.sdk")
 
 _INGEST_PATH = "/ingest/v1/logs"
+
+
+_BREADCRUMB_LOG_LEVELS = frozenset({"warn", "error", "fatal"})
 
 
 class LogModule:
@@ -27,6 +30,7 @@ class LogModule:
     def __init__(self, transport: HttpTransport, config: AllStakConfig) -> None:
         self._transport = transport
         self._config = config
+        self._on_log_breadcrumb: Optional[Callable[..., None]] = None
         self._flush_buffer: FlushBuffer[LogPayload] = FlushBuffer(
             flush_fn=self._flush_batch,
             maxsize=config.buffer_size,
@@ -39,6 +43,10 @@ class LogModule:
     # Public API
     # ------------------------------------------------------------------
 
+    def set_on_log_breadcrumb(self, callback: Callable[..., None]) -> None:
+        """Register a callback for auto-breadcrumbs on warn/error/fatal logs."""
+        self._on_log_breadcrumb = callback
+
     def log(
         self,
         level: str,
@@ -46,6 +54,11 @@ class LogModule:
         *,
         service: Optional[str] = None,
         trace_id: Optional[str] = None,
+        environment: Optional[str] = None,
+        span_id: Optional[str] = None,
+        request_id: Optional[str] = None,
+        user_id: Optional[str] = None,
+        error_id: Optional[str] = None,
         metadata: Optional[Dict[str, Any]] = None,
     ) -> None:
         """
@@ -56,6 +69,11 @@ class LogModule:
         :param message: Log message text.
         :param service: Optional service/module name.
         :param trace_id: Optional distributed trace ID.
+        :param environment: Optional deployment environment.
+        :param span_id: Optional span ID for distributed tracing.
+        :param request_id: Optional HTTP request correlation ID.
+        :param user_id: Optional current user ID.
+        :param error_id: Optional link to error if log relates to one.
         :param metadata: Optional arbitrary key-value dict.
         """
         try:
@@ -64,10 +82,29 @@ class LogModule:
                 message=message,
                 service=service,
                 trace_id=trace_id,
+                environment=environment,
+                span_id=span_id,
+                request_id=request_id,
+                user_id=user_id,
+                error_id=error_id,
                 metadata=metadata or {},
             )
             # Validate before buffering (raises ValueError on bad level)
             payload.to_dict()
+
+            # Auto-breadcrumb for warn/error/fatal log levels
+            if self._on_log_breadcrumb and level in _BREADCRUMB_LOG_LEVELS:
+                try:
+                    bc_level = "error" if level in ("error", "fatal") else "warn"
+                    self._on_log_breadcrumb(
+                        type="log",
+                        message=message,
+                        level=bc_level,
+                        data={"logLevel": level, **({"service": service} if service else {})},
+                    )
+                except Exception:
+                    pass
+
             self._flush_buffer.push(payload)
         except Exception as exc:
             logger.debug("[AllStak] log() failed silently: %s", exc)

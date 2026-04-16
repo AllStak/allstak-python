@@ -288,20 +288,25 @@ class TestReplayIngestion:
 # ---------------------------------------------------------------------------
 
 class TestCronHeartbeat:
-    def test_unknown_slug_returns_404(self):
-        """Backend returns 404 for slug not registered in console."""
+    def test_unknown_slug_auto_creates_monitor(self):
+        """Backend auto-creates a monitor on first ping with an unknown slug (202)."""
         t = make_transport()
-        payload = HeartbeatPayload(slug="nonexistent-job-slug", status="success", duration_ms=1000)
+        payload = HeartbeatPayload(
+            slug="allstak-sdk-integration-auto-create",
+            status="success",
+            duration_ms=1000,
+        )
         status, body = t.post("/ingest/v1/heartbeat", payload.to_dict())
-        assert status == 404
+        assert status == 202
 
-    def test_cron_module_unknown_slug(self):
+    def test_cron_module_unknown_slug_auto_creates(self):
+        """CronModule.ping returns True because the backend auto-creates the monitor."""
         config = make_config()
         transport = make_transport()
         from allstak.modules.cron import CronModule
         module = CronModule(transport, config)
-        result = module.ping("totally-unknown-slug", "success", 1000)
-        assert result is False  # 404 handled gracefully
+        result = module.ping("allstak-sdk-integration-module-auto", "success", 1000)
+        assert result is True  # backend auto-created the monitor and returned 202
 
 
 # ---------------------------------------------------------------------------

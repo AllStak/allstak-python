@@ -8,12 +8,14 @@ import traceback
 from typing import Any, Dict, List, Optional
 
 from ..config import AllStakConfig
-from ..models.errors import ErrorPayload, UserContext
+from ..models.breadcrumb import Breadcrumb
+from ..models.errors import ErrorPayload, RequestContext, UserContext
 from ..transport import AllStakAuthError, AllStakTransportError, HttpTransport
 
 logger = logging.getLogger("allstak.sdk")
 
 _INGEST_PATH = "/ingest/v1/errors"
+_DEFAULT_MAX_BREADCRUMBS = 50
 
 
 class ErrorModule:
@@ -27,7 +29,10 @@ class ErrorModule:
     def __init__(self, transport: HttpTransport, config: AllStakConfig) -> None:
         self._transport = transport
         self._config = config
+        self._max_breadcrumbs = getattr(config, "max_breadcrumbs", _DEFAULT_MAX_BREADCRUMBS)
         self._current_user: Optional[UserContext] = None
+        self._breadcrumbs: List[Breadcrumb] = []
+        self._breadcrumb_lock = __import__("threading").Lock()
 
     def set_user(self, user: UserContext) -> None:
         """Set a default user context that will be attached to all subsequent errors."""
@@ -36,6 +41,34 @@ class ErrorModule:
     def clear_user(self) -> None:
         """Clear the current user context."""
         self._current_user = None
+
+    def add_breadcrumb(
+        self,
+        type: str,
+        message: str,
+        level: Optional[str] = None,
+        data: Optional[Dict[str, Any]] = None,
+    ) -> None:
+        """Add a breadcrumb. Oldest are dropped when the buffer exceeds 50."""
+        crumb = Breadcrumb(type=type, message=message, level=level or "info", data=data)
+        with self._breadcrumb_lock:
+            if len(self._breadcrumbs) >= self._max_breadcrumbs:
+                self._breadcrumbs.pop(0)
+            self._breadcrumbs.append(crumb)
+
+    def clear_breadcrumbs(self) -> None:
+        """Clear all breadcrumbs from the buffer."""
+        with self._breadcrumb_lock:
+            self._breadcrumbs.clear()
+
+    def _drain_breadcrumbs(self) -> Optional[List[Dict[str, Any]]]:
+        """Drain breadcrumbs and return them as a list of dicts, or None if empty."""
+        with self._breadcrumb_lock:
+            if not self._breadcrumbs:
+                return None
+            result = [b.to_dict() for b in self._breadcrumbs]
+            self._breadcrumbs.clear()
+            return result
 
     def capture_exception(
         self,
@@ -46,6 +79,8 @@ class ErrorModule:
         release: Optional[str] = None,
         session_id: Optional[str] = None,
         user: Optional[UserContext] = None,
+        request_context: Optional[RequestContext] = None,
+        trace_id: Optional[str] = None,
         metadata: Optional[Dict[str, Any]] = None,
     ) -> Optional[str]:
         """
@@ -64,6 +99,7 @@ class ErrorModule:
         """
         try:
             frames = self._extract_stack_trace(exc)
+            breadcrumbs = self._drain_breadcrumbs()
             payload = ErrorPayload(
                 exception_class=type(exc).__name__,
                 message=str(exc) or repr(exc),
@@ -73,7 +109,10 @@ class ErrorModule:
                 release=release or self._config.release,
                 session_id=session_id,
                 user=user or self._current_user,
+                request_context=request_context,
+                trace_id=trace_id,
                 metadata=metadata or {},
+                breadcrumbs=breadcrumbs,
             )
             return self._send(payload)
         except AllStakAuthError:
@@ -93,6 +132,8 @@ class ErrorModule:
         release: Optional[str] = None,
         session_id: Optional[str] = None,
         user: Optional[UserContext] = None,
+        request_context: Optional[RequestContext] = None,
+        trace_id: Optional[str] = None,
         metadata: Optional[Dict[str, Any]] = None,
     ) -> Optional[str]:
         """
@@ -103,6 +144,7 @@ class ErrorModule:
         Never raises.
         """
         try:
+            breadcrumbs = self._drain_breadcrumbs()
             payload = ErrorPayload(
                 exception_class=exception_class,
                 message=message,
@@ -112,7 +154,10 @@ class ErrorModule:
                 release=release or self._config.release,
                 session_id=session_id,
                 user=user or self._current_user,
+                request_context=request_context,
+                trace_id=trace_id,
                 metadata=metadata or {},
+                breadcrumbs=breadcrumbs,
             )
             return self._send(payload)
         except AllStakAuthError:

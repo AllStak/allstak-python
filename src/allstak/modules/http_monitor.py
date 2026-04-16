@@ -43,6 +43,29 @@ def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
 
 
+class _OutboundRecorder:
+    """
+    Mutable value holder returned by :meth:`HttpMonitorModule.track_outbound`.
+
+    Callers use ``set_response(status, size)`` to attach the real HTTP
+    response status and body size before the context manager exits.
+    """
+
+    __slots__ = ("status_code", "response_size", "request_size")
+
+    def __init__(self) -> None:
+        self.status_code: int = 0
+        self.response_size: int = 0
+        self.request_size: int = 0
+
+    def set_response(self, status_code: int, response_size: int = 0) -> None:
+        self.status_code = int(status_code)
+        self.response_size = int(response_size)
+
+    def set_request_size(self, request_size: int) -> None:
+        self.request_size = int(request_size)
+
+
 class HttpMonitorModule:
     """
     Buffers and batches HTTP request telemetry for delivery to AllStak.
@@ -128,25 +151,32 @@ class HttpMonitorModule:
         url: str,
         *,
         user_id: Optional[str] = None,
-    ) -> Generator[None, None, None]:
+        trace_id: Optional[str] = None,
+    ) -> Generator["_OutboundRecorder", None, None]:
         """
         Context manager that times an outbound HTTP call and records it.
 
-        Usage::
+        Yields an :class:`_OutboundRecorder` so the caller can attach the real
+        response status and size::
 
-            with allstak.http.track_outbound("GET", "https://api.example.com/v1/data"):
-                response = requests.get("https://api.example.com/v1/data")
+            with allstak.http.track_outbound("GET", "https://api.example.com/data") as call:
+                resp = httpx.get("https://api.example.com/data")
+                call.set_response(resp.status_code, len(resp.content))
+
+        On an unhandled exception the call is still recorded (status=0,
+        error fingerprint = exception class name) and the exception re-raised.
         """
         parsed = urlparse(url)
         host = parsed.netloc or parsed.path
         path = parsed.path or "/"
         start_ms = time.monotonic() * 1000
         start_ts = _now_iso()
-        status_code = 0
-        response_size = 0
+        recorder = _OutboundRecorder()
+        exc_type_name: Optional[str] = None
         try:
-            yield
-        except Exception:
+            yield recorder
+        except Exception as exc:
+            exc_type_name = type(exc).__name__
             raise
         finally:
             duration_ms = int(time.monotonic() * 1000 - start_ms)
@@ -155,10 +185,14 @@ class HttpMonitorModule:
                 method=method,
                 host=host,
                 path=path,
-                status_code=status_code or 0,
+                status_code=recorder.status_code or 0,
                 duration_ms=duration_ms,
+                request_size=recorder.request_size,
+                response_size=recorder.response_size,
                 timestamp=start_ts,
                 user_id=user_id,
+                trace_id=trace_id,
+                error_fingerprint=exc_type_name,
             )
 
     def flush(self) -> None:
