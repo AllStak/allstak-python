@@ -461,6 +461,15 @@ def init(
         )
         _client = AllStakClient(config)
         _initialized_once = True
+
+        # Best-effort auto-instrumentation of common outbound HTTP libraries.
+        # Each integration is a no-op if its underlying lib isn't installed.
+        try:
+            from .integrations.httpx import install_httpx
+            install_httpx()
+        except Exception as e:  # pragma: no cover — never fail init
+            logger.debug("[AllStak] httpx auto-install failed: %s", e)
+
         return _client
 
 

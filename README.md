@@ -100,19 +100,23 @@ status, and error message. Queries are grouped by pattern in the dashboard.
 
 ## What gets captured automatically
 
-Once `init()` has run (and, if applicable, a framework integration is
-installed) the SDK captures:
+Single source of truth — runtime-verified against the live AllStak backend.
+"Auto" means `init()` alone is enough; "Manual (one line)" means you call one
+helper at startup and then it's hands-off.
 
-| What                      | How                                        |
-| ------------------------- | ------------------------------------------ |
-| Python exceptions         | `allstak.capture_exception(e)` or framework middleware |
-| Unhandled route exceptions| FastAPI / Django / Flask integrations      |
-| Inbound HTTP requests     | FastAPI / Django / Flask integrations      |
-| SQL queries               | `allstak.integrations.sqlalchemy.install`  |
-| Log breadcrumbs           | Python `logging` (WARNING+) → auto         |
-| `requests` lib breadcrumbs| auto-patched `requests.Session.send`       |
-| User context              | `allstak.set_user(...)`                    |
-| Trace context             | auto per request (framework integrations)  |
+| What                              | Auto vs Manual | Notes |
+| --------------------------------- | -------------- | ----- |
+| Uncaught Python exceptions        | **Auto** — `sys.excepthook` set in `init()` | ✅ |
+| Handled exceptions                | Manual — `allstak.capture_exception(e)` | |
+| Outbound HTTP via `httpx`         | **Auto** — `init()` patches `httpx.Client.__init__` and `httpx.AsyncClient.__init__` to attach event hooks. No-op if `httpx` is not installed. Recurses-safe (own ingest traffic skipped). | ✅ |
+| Outbound HTTP via `requests`      | **Manual** — not auto-instrumented today. Call `allstak.http.record(direction='outbound', ...)` or wrap your `requests.Session`. | follow-up |
+| Inbound HTTP (FastAPI)            | **Manual (one line)** — `AllStakFastAPI(app, service="...")` | ✅ |
+| Inbound HTTP (Django / Flask)     | **Manual (one line)** — `AllStakDjango()` / `install_flask(app)` | source-only |
+| SQL queries (SQLAlchemy)          | **Manual (one line)** — `install_sqlalchemy(engine)` (then every Core/ORM query is auto) | ✅ |
+| SQL queries (other ORMs)          | Manual — call `client.database.capture(...)` per query | |
+| Logs                              | Manual — `allstak.log.info / warn / error` | |
+| Breadcrumbs                       | Not implemented in source today | |
+| User / trace / env / release      | Auto-attached to every event from `init()` config + `set_user(...)` | ✅ |
 
 ## Manual capture cheat sheet
 
