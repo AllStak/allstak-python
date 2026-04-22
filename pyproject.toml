@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "allstak"
-version = "0.2.0"
+version = "0.1.1"
 description = "Official Python SDK for AllStak — error tracking, structured logs, HTTP + DB monitoring, distributed tracing, and cron monitoring with first-class FastAPI, Django and Flask support"
 readme = "README.md"
 requires-python = ">=3.9"
@@ -51,9 +51,9 @@ dependencies = [
 [project.urls]
 Homepage = "https://allstak.dev"
 Documentation = "https://allstak.dev/docs/sdks/python"
-Repository = "https://github.com/allstak/allstak-python"
-Issues = "https://github.com/allstak/allstak-python/issues"
-Changelog = "https://github.com/allstak/allstak-python/blob/main/CHANGELOG.md"
+Repository = "https://github.com/allstak-io/allstak-python"
+Issues = "https://github.com/allstak-io/allstak-python/issues"
+Changelog = "https://github.com/allstak-io/allstak-python/blob/main/CHANGELOG.md"
 
 [project.optional-dependencies]
 dev = [
