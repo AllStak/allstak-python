@@ -18,7 +18,7 @@ class AllStakConfig:
     api_key: str
     """Raw API key sent as ``X-AllStak-Key``.  Never hash it — the backend does that."""
 
-    host: str = "http://localhost:8080"
+    host: str = "https://api.allstak.sa"
     """Base URL of the AllStak backend, without trailing slash."""
 
     # --- Optional context ---
@@ -73,7 +73,7 @@ class AllStakConfig:
             )
         return cls(
             api_key=api_key,
-            host=os.environ.get("ALLSTAK_HOST", "http://localhost:8080"),
+            host=os.environ.get("ALLSTAK_HOST", "https://api.allstak.sa"),
             environment=os.environ.get("ALLSTAK_ENVIRONMENT"),
             release=os.environ.get("ALLSTAK_RELEASE"),
             debug=bool(os.environ.get("ALLSTAK_DEBUG", "")),

@@ -400,7 +400,7 @@ _initialized_once = False
 
 def init(
     api_key: Optional[str] = None,
-    host: str = "http://localhost:8080",
+    host: str = "https://api.allstak.sa",
     *,
     environment: Optional[str] = None,
     release: Optional[str] = None,
@@ -421,7 +421,7 @@ def init(
 
     :param api_key: Raw API key (``X-AllStak-Key``).
                     Falls back to ``ALLSTAK_API_KEY`` env var.
-    :param host: AllStak backend URL (default: ``http://localhost:8080``).
+    :param host: AllStak backend URL (default: ``https://api.allstak.sa``).
     :param environment: Deployment environment (e.g. ``"production"``).
     :param release: App version / release tag (e.g. ``"v1.4.2"``).
     :param flush_interval_ms: Background flush interval in milliseconds.
@@ -441,7 +441,7 @@ def init(
         import os
 
         resolved_key = api_key or os.environ.get("ALLSTAK_API_KEY", "")
-        resolved_host = host or os.environ.get("ALLSTAK_HOST", "http://localhost:8080")
+        resolved_host = host or os.environ.get("ALLSTAK_HOST", "https://api.allstak.sa")
         resolved_env = environment or os.environ.get("ALLSTAK_ENVIRONMENT")
         resolved_release = release or os.environ.get("ALLSTAK_RELEASE")
 

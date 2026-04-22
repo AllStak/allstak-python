@@ -176,7 +176,7 @@ allstak.flush()
 | Parameter          | Default                    | Notes |
 | ------------------ | -------------------------- | ----- |
 | `api_key`          | _required_                 | Your `ask_live_...` key. Never commit these. |
-| `host`             | `http://localhost:8080`    | Override with your AllStak backend URL (self-hosted or SaaS). |
+| `host`             | `https://api.allstak.sa`    | Override with your AllStak backend URL (self-hosted or SaaS). |
 | `environment`      | `None`                     | e.g. `"production"`, `"staging"` |
 | `release`          | `None`                     | e.g. `"taskflow@1.4.2"`. Shown on every error. |
 | `flush_interval_ms`| `5000`                     | How often background buffers flush. |

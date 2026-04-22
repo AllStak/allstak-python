@@ -4,7 +4,7 @@ Real API key and backend URL used during SDK development and validation.
 
 ```bash
 API_KEY="ask_live_o5fmoedqr14vxm47rltn9frjpazjszh7"
-BASE="http://localhost:8080"
+BASE="https://api.allstak.sa"
 ```
 
 ---
@@ -323,7 +323,7 @@ curl -s -w "\nHTTP:%{http_code}" -X POST "$BASE/ingest/v1/heartbeat" \
 ## Health Check
 
 ```bash
-curl -s http://localhost:8080/actuator/health
+curl -s https://api.allstak.sa/actuator/health
 # Expected: {"status":"UP"}
 ```
 
@@ -331,7 +331,7 @@ curl -s http://localhost:8080/actuator/health
 
 ## Actual Test Results
 
-All commands above were validated against `http://localhost:8080` on 2026-03-31.
+All commands above were validated against `https://api.allstak.sa` on 2026-03-31.
 
 | Endpoint | Test | Result |
 |---|---|---|

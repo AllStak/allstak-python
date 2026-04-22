@@ -27,7 +27,7 @@ if not api_key:
 
 allstak.init(
     api_key=api_key,
-    host=os.environ.get("ALLSTAK_HOST", "https://ingest.allstak.dev"),
+    host=os.environ.get("ALLSTAK_HOST", "https://api.allstak.sa"),
     environment=os.environ.get("ALLSTAK_ENVIRONMENT", "development"),
     release=os.environ.get("ALLSTAK_RELEASE", "0.2.0"),
     debug=bool(os.environ.get("ALLSTAK_DEBUG")),
