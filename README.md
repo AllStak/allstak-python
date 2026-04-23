@@ -1,283 +1,133 @@
-# AllStak Python SDK
+# allstak
 
-Official Python SDK for [AllStak](https://allstak.dev) — error tracking,
-structured logs, HTTP + DB monitoring, distributed tracing, and cron
-monitoring with first-class FastAPI, Django, Flask, and SQLAlchemy support.
+**Error tracking, logs, and request tracing for Python — works out of the box with Django, Flask, and FastAPI.**
+
+[![PyPI version](https://img.shields.io/pypi/v/allstak.svg)](https://pypi.org/project/allstak/)
+[![CI](https://github.com/allstak-io/allstak-python/actions/workflows/ci.yml/badge.svg)](https://github.com/allstak-io/allstak-python/actions)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+
+Official AllStak SDK for Python — captures exceptions, structured logs, HTTP requests, database queries, distributed traces, cron heartbeats, and session replay for Django, Flask, FastAPI, and plain Python services.
+
+## Dashboard
+
+View captured events live at [app.allstak.sa](https://app.allstak.sa).
+
+![AllStak dashboard](https://app.allstak.sa/images/dashboard-preview.png)
+
+## Features
+
+- Exception and `sys.excepthook` capture
+- Structured logs with a `logging` handler bridge
+- `requests` auto-instrumentation for breadcrumbs and outbound HTTP telemetry
+- Django / Flask / FastAPI middleware for inbound request capture
+- Distributed tracing with context-managed spans
+- Cron heartbeats via `allstak.cron.job` context manager
+- Configurable via `AllStakConfig.from_env()` for 12-factor apps
+
+## What You Get
+
+Once integrated, every event flows to your AllStak dashboard:
+
+- **Errors** — stack traces, breadcrumbs, release + environment tags
+- **Logs** — structured logs bridged from `logging` with search and filters
+- **HTTP** — inbound and outbound request timing, status codes, failed calls
+- **Performance** — slow endpoints and DB queries
+- **Cron monitors** — scheduled job success/failure tracking
+- **Alerts** — email and webhook notifications on regressions
+
+## Installation
 
 ```bash
 pip install allstak
 ```
 
-## 60-second setup
+## Quick Start
+
+> Create a project at [app.allstak.sa](https://app.allstak.sa) to get your API key.
 
 ```python
+import os
 import allstak
 
 allstak.init(
-    api_key="ask_live_...",          # required
-    environment="production",        # optional
-    release="taskflow@1.4.2",        # optional
+    api_key=os.getenv("ALLSTAK_API_KEY"),
+    environment="production",
+    release="myapp@1.0.0",
 )
 
-try:
-    1 / 0
-except Exception as e:
-    allstak.capture_exception(e)
+allstak.capture_exception(Exception("test: hello from allstak-python"))
 ```
 
-That's it. The first error will appear in your AllStak project within a few
-seconds.
+Run the file — the test error appears in your dashboard within seconds.
 
-## FastAPI in two lines
+## Get Your API Key
 
-```python
-from fastapi import FastAPI
-import allstak
-from allstak.integrations.fastapi import AllStakFastAPI
-
-allstak.init(api_key="ask_live_...")
-
-app = FastAPI()
-AllStakFastAPI(app, service="taskflow-api")
-```
-
-This automatically captures:
-
-- every inbound request (method, path, status, duration, body size)
-- every unhandled exception — with the full stack trace, request context,
-  trace ID, and the authenticated user
-- a fresh trace ID per request, linked to errors on the dashboard
-
-If you want user context on errors, set it in your auth dependency:
-
-```python
-@app.get("/me")
-def me(current_user = Depends(get_current_user)):
-    allstak.set_user(user_id=str(current_user.id), email=current_user.email)
-    return current_user
-```
-
-## Django
-
-```python
-# settings.py
-MIDDLEWARE = [
-    "allstak.integrations.django.AllStakMiddleware",
-    # ...
-]
-
-ALLSTAK = {
-    "api_key": "ask_live_...",
-    "environment": "production",
-}
-```
-
-## Flask
-
-```python
-from flask import Flask
-from allstak.integrations.flask import AllStakFlask
-
-app = Flask(__name__)
-AllStakFlask(app)
-```
-
-## SQLAlchemy
-
-One line hooks the event system — no monkey-patching — and works with
-Postgres, MySQL, SQLite, MariaDB, and any other SQLAlchemy dialect:
-
-```python
-from sqlalchemy import create_engine
-from allstak.integrations.sqlalchemy import install as install_sqlalchemy
-
-engine = create_engine("postgresql://...")
-install_sqlalchemy(engine)
-```
-
-Every ORM and Core query is captured with normalized SQL, timing, row count,
-status, and error message. Queries are grouped by pattern in the dashboard.
-
-## What gets captured automatically
-
-Single source of truth — runtime-verified against the live AllStak backend.
-"Auto" means `init()` alone is enough; "Manual (one line)" means you call one
-helper at startup and then it's hands-off.
-
-| What                              | Auto vs Manual | Notes |
-| --------------------------------- | -------------- | ----- |
-| Uncaught Python exceptions        | **Auto** — `sys.excepthook` set in `init()` | ✅ |
-| Handled exceptions                | Manual — `allstak.capture_exception(e)` | |
-| Outbound HTTP via `httpx`         | **Auto** — `init()` patches `httpx.Client.__init__` and `httpx.AsyncClient.__init__` to attach event hooks. No-op if `httpx` is not installed. Recurses-safe (own ingest traffic skipped). | ✅ |
-| Outbound HTTP via `requests`      | **Manual** — not auto-instrumented today. Call `allstak.http.record(direction='outbound', ...)` or wrap your `requests.Session`. | follow-up |
-| Inbound HTTP (FastAPI)            | **Manual (one line)** — `AllStakFastAPI(app, service="...")` | ✅ |
-| Inbound HTTP (Django / Flask)     | **Manual (one line)** — `AllStakDjango()` / `install_flask(app)` | source-only |
-| SQL queries (SQLAlchemy)          | **Manual (one line)** — `install_sqlalchemy(engine)` (then every Core/ORM query is auto) | ✅ |
-| SQL queries (other ORMs)          | Manual — call `client.database.capture(...)` per query | |
-| Logs                              | Manual — `allstak.log.info / warn / error` | |
-| Breadcrumbs                       | Not implemented in source today | |
-| User / trace / env / release      | Auto-attached to every event from `init()` config + `set_user(...)` | ✅ |
-
-## Manual capture cheat sheet
-
-```python
-# Errors
-allstak.capture_exception(e, metadata={"order_id": "ORD-123"})
-allstak.capture_error(
-    exception_class="StripeTimeout",
-    message="Stripe /v1/charges timed out after 30s",
-    level="error",
-)
-
-# Logs (buffered, flushed in the background)
-allstak.log.info("Order placed", service="orders", metadata={"id": "ORD-1"})
-allstak.log.warn("Slow query", service="db", metadata={"ms": 4500})
-allstak.log.error("Payment failed", metadata={"gateway": "stripe"})
-# valid levels: debug | info | warn | error | fatal  (NOT "warning")
-
-# Outbound HTTP — with correct timing and status
-with allstak.http.track_outbound("POST", "https://api.stripe.com/v1/charges") as call:
-    resp = httpx.post("https://api.stripe.com/v1/charges", json=payload)
-    call.set_response(resp.status_code, len(resp.content))
-
-# Distributed tracing
-with allstak.start_span("db.query", description="SELECT users") as span:
-    span.set_tag("db.type", "postgresql")
-    rows = db.execute(sql)
-
-# Cron monitoring — slug auto-created on first ping
-with allstak.cron.job("daily-report"):
-    generate_report()
-    # heartbeat automatically sent on exit (success | failed + message)
-
-# User context
-allstak.set_user(user_id="u-1", email="alice@example.com")
-allstak.clear_user()
-
-# Graceful shutdown (optional — atexit flush runs automatically)
-allstak.flush()
-```
-
-## Dashboard mapping
-
-| Your code                                  | Dashboard page        |
-| ------------------------------------------ | --------------------- |
-| `allstak.capture_exception`                | **Errors**, **Incidents** |
-| `allstak.log.*`                            | **Logs**              |
-| framework middleware (inbound)             | **Requests**          |
-| `allstak.http.track_outbound`              | **Requests** (outbound) |
-| `install_sqlalchemy(engine)`               | **Database**          |
-| `allstak.start_span`                       | **Traces**            |
-| `allstak.cron.job` / `allstak.cron.ping`   | **Cron Jobs**         |
-| `allstak.set_user`                         | shown on Errors & Logs|
+1. Sign up at [app.allstak.sa](https://app.allstak.sa)
+2. Create a project
+3. Copy your API key from **Project Settings → API Keys**
+4. Export it as `ALLSTAK_API_KEY` or pass it to `allstak.init(...)`
 
 ## Configuration
 
-| Parameter          | Default                    | Notes |
-| ------------------ | -------------------------- | ----- |
-| `api_key`          | _required_                 | Your `ask_live_...` key. Never commit these. |
-| `host`             | `https://api.allstak.sa`    | Override with your AllStak backend URL (self-hosted or SaaS). |
-| `environment`      | `None`                     | e.g. `"production"`, `"staging"` |
-| `release`          | `None`                     | e.g. `"taskflow@1.4.2"`. Shown on every error. |
-| `flush_interval_ms`| `5000`                     | How often background buffers flush. |
-| `buffer_size`      | `500`                      | Max buffered items per feature. Oldest dropped first. |
-| `debug`            | `False`                    | Verbose SDK logging to stderr. |
-| `auto_breadcrumbs` | `True`                     | Patch `requests` and `logging` for breadcrumbs. |
+| Option | Type | Required | Default | Description |
+|---|---|---|---|---|
+| `api_key` | `str` | yes | — | Project API key (`ask_live_…`) |
+| `host` | `str` | no | `https://api.allstak.sa` | Ingest host override |
+| `environment` | `str` | no | — | Deployment env (`production`, `staging`) |
+| `release` | `str` | no | — | App version or release tag |
+| `debug` | `bool` | no | `False` | Verbose SDK logging to stderr |
+| `flush_interval_ms` | `int` | no | `5000` | Background flush cadence |
+| `buffer_size` | `int` | no | `500` | Max items per buffer |
+| `auto_breadcrumbs` | `bool` | no | `True` | Auto-instrument `requests` and `logging` |
+| `max_breadcrumbs` | `int` | no | `50` | Breadcrumb ring buffer size |
 
-Environment variables: `ALLSTAK_API_KEY`, `ALLSTAK_HOST`,
-`ALLSTAK_ENVIRONMENT`, `ALLSTAK_RELEASE`, `ALLSTAK_DEBUG`.
+Environment variables: `ALLSTAK_API_KEY`, `ALLSTAK_HOST`, `ALLSTAK_ENVIRONMENT`, `ALLSTAK_RELEASE`, `ALLSTAK_DEBUG`.
 
-## Production notes
+## Example Usage
 
-- **Never crashes your app.** The SDK swallows every exception from its own
-  code paths. If ingestion fails (network, 4xx, 5xx exhausted), your request
-  still completes.
-- **Retries.** 5xx and network errors retry with exponential backoff
-  (1s → 2s → 4s → 8s, +jitter, max 5 attempts). 4xx are not retried.
-- **401 disables the SDK.** An invalid API key disables the SDK for the
-  rest of the process — no further events are sent, a warning is logged once,
-  and your app keeps running.
-- **Flush on shutdown.** `atexit` triggers a best-effort flush (5s deadline).
-- **Thread-safe.** All public APIs are safe to call from any thread.
-- **No async I/O.** Uses synchronous `httpx` under the hood. Calls are
-  non-blocking because buffers flush on a background thread.
-
-## Troubleshooting
-
-| Symptom                               | Fix                                              |
-| ------------------------------------- | ------------------------------------------------ |
-| No errors in dashboard                | Check `host` and `api_key`. Set `debug=True` to see outgoing requests. |
-| 401 warning                           | Invalid API key. Create a new one in Settings → API Keys. |
-| Inbound requests missing              | Make sure `AllStakFastAPI(app)` / `AllStakMiddleware` is registered. |
-| DB queries missing                    | Call `install_sqlalchemy(engine)` on your engine. |
-| Cron monitor not appearing            | It is auto-created on first ping; check the slug matches. |
-| `warn` vs `warning`                   | For `allstak.log.*` use `warn`, not `warning`. |
-| Events lost under burst               | Increase `buffer_size` or decrease `flush_interval_ms`. |
-
-## Optional extras
-
-```bash
-pip install "allstak[fastapi]"     # starlette
-pip install "allstak[django]"      # django
-pip install "allstak[flask]"       # flask
-pip install "allstak[sqlalchemy]"  # sqlalchemy
-pip install "allstak[all]"         # everything
-```
-
-## Full FastAPI example
+Capture an exception with metadata:
 
 ```python
-from fastapi import FastAPI, Depends, HTTPException
-from sqlalchemy import create_engine
-from sqlalchemy.orm import sessionmaker, Session
-
-import allstak
-from allstak.integrations.fastapi import AllStakFastAPI
-from allstak.integrations.sqlalchemy import install as install_sqlalchemy
-
-engine = create_engine("sqlite:///./app.db")
-SessionLocal = sessionmaker(bind=engine)
-
-allstak.init(
-    api_key="ask_live_...",
-    environment="production",
-    release="taskflow@1.4.2",
-)
-install_sqlalchemy(engine)
-
-app = FastAPI()
-AllStakFastAPI(app, service="taskflow-api")
-
-
-def get_db() -> Session:
-    db = SessionLocal()
-    try:
-        yield db
-    finally:
-        db.close()
-
-
-@app.post("/orders/{order_id}/charge")
-def charge(order_id: int, db: Session = Depends(get_db)):
-    allstak.log.info("charging", service="billing", metadata={"orderId": order_id})
-
-    with allstak.start_span("db.load-order") as span:
-        order = db.execute("SELECT * FROM orders WHERE id = ?", (order_id,)).first()
-        span.set_tag("order.id", str(order_id))
-
-    if order is None:
-        raise HTTPException(404, "order not found")
-
-    # Outbound charge
-    with allstak.http.track_outbound("POST", "https://api.stripe.com/v1/charges") as call:
-        resp = httpx.post("https://api.stripe.com/v1/charges", json={"amount": order["total"]})
-        call.set_response(resp.status_code, len(resp.content))
-        if resp.status_code != 200:
-            raise HTTPException(502, "stripe failed")
-
-    return {"ok": True}
+try:
+    charge_card(order)
+except PaymentError as e:
+    allstak.capture_exception(e, metadata={"order_id": order.id})
 ```
+
+Send a structured log:
+
+```python
+allstak.log.info("User signed up", metadata={"user_id": user.id})
+```
+
+Set user context and tags:
+
+```python
+allstak.set_user(id=user.id, email=user.email)
+allstak.set_tag("region", "eu-west-1")
+```
+
+Report a cron run:
+
+```python
+with allstak.cron.job("daily-report"):
+    generate_report()
+```
+
+## Production Endpoint
+
+Production endpoint: `https://api.allstak.sa`. Override via `host` (or `ALLSTAK_HOST`) for self-hosted deployments:
+
+```python
+allstak.init(api_key=os.getenv("ALLSTAK_API_KEY"), host="https://allstak.mycorp.com")
+```
+
+## Links
+
+- Documentation: https://docs.allstak.sa
+- Dashboard: https://app.allstak.sa
+- Source: https://github.com/allstak-io/allstak-python
 
 ## License
 
-MIT
+MIT © AllStak
