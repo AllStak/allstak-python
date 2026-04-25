@@ -19,6 +19,8 @@ _DEFAULT_MAX_BREADCRUMBS = 50
 
 
 class ErrorModule:
+    SDK_VERSION = "1.2.0"
+
     """
     Captures exceptions and sends them to AllStak.
 
@@ -99,6 +101,7 @@ class ErrorModule:
         """
         try:
             frames = self._extract_stack_trace(exc)
+            structured = self._extract_structured_frames(exc)
             breadcrumbs = self._drain_breadcrumbs()
             payload = ErrorPayload(
                 exception_class=type(exc).__name__,
@@ -113,6 +116,12 @@ class ErrorModule:
                 trace_id=trace_id,
                 metadata=metadata or {},
                 breadcrumbs=breadcrumbs,
+                # Phase 2 — v2 ingest contract
+                sdk_name=getattr(self._config, "sdk_name", None) or "allstak-python",
+                sdk_version=getattr(self._config, "sdk_version", None) or self.SDK_VERSION,
+                platform=getattr(self._config, "platform", None) or "python",
+                dist=getattr(self._config, "dist", None),
+                frames=structured if structured else None,
             )
             return self._send(payload)
         except AllStakAuthError:
@@ -189,7 +198,6 @@ class ErrorModule:
             if tb is None:
                 return []
             lines = traceback.format_tb(tb)
-            # format_tb returns multi-line strings; split and strip
             frames: List[str] = []
             for chunk in lines:
                 for line in chunk.splitlines():
@@ -199,3 +207,30 @@ class ErrorModule:
             return frames
         except Exception:
             return []
+
+    @staticmethod
+    def _extract_structured_frames(exc: BaseException) -> List[Dict[str, Any]]:
+        """
+        Phase 2 — produce v2-shape ``ErrorIngestRequest.Frame`` dicts from
+        the traceback so the backend can resolve / display source-mapped
+        frames without re-parsing the v1 string list.
+        """
+        out: List[Dict[str, Any]] = []
+        try:
+            tb = exc.__traceback__
+            if tb is None:
+                return out
+            for f in traceback.extract_tb(tb):
+                in_app = not (f.filename.startswith("<") or "site-packages" in f.filename)
+                out.append({
+                    "filename": f.filename,
+                    "absPath": f.filename,
+                    "function": f.name,
+                    "lineno": f.lineno,
+                    "colno": None,
+                    "inApp": in_app,
+                    "platform": "python",
+                })
+        except Exception:
+            pass
+        return out

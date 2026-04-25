@@ -56,6 +56,12 @@ class HttpRequestItem:
     error_fingerprint: Optional[str] = None
     """Error group fingerprint if the request resulted in an error (optional)."""
 
+    # Release-tracking metadata. Backend has first-class columns for
+    # release / environment, and stores the rest inside metadata.
+    release: Optional[str] = None
+    environment: Optional[str] = None
+    metadata: Optional[Dict[str, Any]] = None
+
     def to_dict(self) -> Dict[str, Any]:
         if self.direction not in ("inbound", "outbound"):
             raise ValueError(
@@ -79,6 +85,12 @@ class HttpRequestItem:
             payload["userId"] = self.user_id
         if self.error_fingerprint is not None:
             payload["errorFingerprint"] = self.error_fingerprint
+        if self.release is not None:
+            payload["release"] = self.release
+        if self.environment is not None:
+            payload["environment"] = self.environment
+        if self.metadata:
+            payload["metadata"] = self.metadata
         return payload
 
 

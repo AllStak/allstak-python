@@ -28,6 +28,25 @@ class AllStakConfig:
     release: Optional[str] = None
     """App version or release tag, e.g. ``"v1.4.2"``."""
 
+    # --- Release-tracking metadata (optional, auto-detected when possible) ---
+    dist: Optional[str] = None
+    """Build distribution tag (e.g. ``"linux"``, ``"darwin"``)."""
+
+    commit_sha: Optional[str] = None
+    """Git commit SHA the running build was built from."""
+
+    branch: Optional[str] = None
+    """Git branch the running build was built from."""
+
+    platform: Optional[str] = None
+    """Runtime platform — auto-set to ``"python"`` if left None."""
+
+    sdk_name: Optional[str] = None
+    """SDK package name — auto-set to ``"allstak-python"``."""
+
+    sdk_version: Optional[str] = None
+    """SDK semver — auto-set from package metadata when left None."""
+
     # --- Behaviour tuning ---
     flush_interval_ms: int = 5_000
     """How often (ms) the background flush timer fires.  Default: 5 000 ms."""
@@ -84,3 +103,68 @@ class AllStakConfig:
             raise ValueError("AllStak SDK: api_key must not be empty")
         # Strip trailing slash so we can always do host + "/ingest/..."
         self.host = self.host.rstrip("/")
+        self._apply_release_autodetect()
+
+    def _apply_release_autodetect(self) -> None:
+        """
+        Best-effort population of release-tracking metadata from CI/runtime
+        env vars. Explicit user values always win — we only fill in fields
+        the caller left unset. Never raises; if env access fails (e.g. in a
+        sandboxed embedder), we leave the field as ``None``.
+
+        Auto-detect order mirrors the JS SDK so behaviour is consistent
+        regardless of language.
+        """
+        try:
+            if not self.platform:
+                self.platform = "python"
+            if not self.sdk_name:
+                self.sdk_name = "allstak-python"
+            if not self.sdk_version:
+                try:
+                    from importlib.metadata import version as _v
+                    self.sdk_version = _v("allstak")
+                except Exception:
+                    self.sdk_version = None
+            if not self.release:
+                self.release = (
+                    os.environ.get("ALLSTAK_RELEASE")
+                    or os.environ.get("VERCEL_GIT_COMMIT_SHA", "")[:12] or None
+                    or os.environ.get("RAILWAY_GIT_COMMIT_SHA", "")[:12] or None
+                    or os.environ.get("RENDER_GIT_COMMIT", "")[:12] or None
+                )
+            if not self.commit_sha:
+                self.commit_sha = (
+                    os.environ.get("ALLSTAK_COMMIT_SHA")
+                    or os.environ.get("GIT_COMMIT")
+                    or os.environ.get("VERCEL_GIT_COMMIT_SHA")
+                    or os.environ.get("RAILWAY_GIT_COMMIT_SHA")
+                    or os.environ.get("RENDER_GIT_COMMIT")
+                )
+            if not self.branch:
+                self.branch = (
+                    os.environ.get("ALLSTAK_BRANCH")
+                    or os.environ.get("GIT_BRANCH")
+                    or os.environ.get("VERCEL_GIT_COMMIT_REF")
+                    or os.environ.get("RAILWAY_GIT_BRANCH")
+                )
+            if not self.environment:
+                self.environment = (
+                    os.environ.get("ALLSTAK_ENVIRONMENT")
+                    or os.environ.get("APP_ENV")
+                    or "production"
+                )
+        except Exception:
+            # Auto-detection is best-effort; never break SDK init.
+            pass
+
+    def release_tags(self) -> dict:
+        """Return the release-metadata dict to merge into outgoing event payloads."""
+        out: dict = {}
+        if self.sdk_name: out["sdk.name"] = self.sdk_name
+        if self.sdk_version: out["sdk.version"] = self.sdk_version
+        if self.platform: out["platform"] = self.platform
+        if self.dist: out["dist"] = self.dist
+        if self.commit_sha: out["commit.sha"] = self.commit_sha
+        if self.branch: out["commit.branch"] = self.branch
+        return out

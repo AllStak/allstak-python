@@ -99,6 +99,22 @@ class ErrorPayload:
     breadcrumbs: Optional[List[Dict[str, Any]]] = None
     """Breadcrumbs captured before this error."""
 
+    # ── Phase 2 — v2 ingest contract ──────────────────────────────
+    sdk_name: Optional[str] = None
+    """SDK identifier on the wire — e.g. ``allstak-python``."""
+
+    sdk_version: Optional[str] = None
+    """SDK semver — e.g. ``1.2.0``."""
+
+    platform: Optional[str] = None
+    """Runtime platform — set to ``python`` by the SDK."""
+
+    dist: Optional[str] = None
+    """Build distribution tag (mobile / multi-bundle releases)."""
+
+    frames: Optional[List[Dict[str, Any]]] = None
+    """Structured stack frames matching ErrorIngestRequest.Frame on the backend."""
+
     def to_dict(self) -> Dict[str, Any]:
         if self.level not in ERROR_LEVELS:
             raise ValueError(
@@ -129,4 +145,15 @@ class ErrorPayload:
             payload["metadata"] = self.metadata
         if self.breadcrumbs:
             payload["breadcrumbs"] = self.breadcrumbs
+        # v2 fields
+        if self.sdk_name:
+            payload["sdkName"] = self.sdk_name
+        if self.sdk_version:
+            payload["sdkVersion"] = self.sdk_version
+        if self.platform:
+            payload["platform"] = self.platform
+        if self.dist:
+            payload["dist"] = self.dist
+        if self.frames:
+            payload["frames"] = self.frames
         return payload

@@ -77,17 +77,22 @@ class LogModule:
         :param metadata: Optional arbitrary key-value dict.
         """
         try:
+            # Merge release-tracking tags into metadata. Caller-supplied
+            # metadata wins, then traces context, then config-level tags.
+            enriched_meta = dict(metadata) if metadata else {}
+            for k, v in self._config.release_tags().items():
+                enriched_meta.setdefault(k, v)
             payload = LogPayload(
                 level=level,
                 message=message,
                 service=service,
                 trace_id=trace_id,
-                environment=environment,
+                environment=environment or self._config.environment,
                 span_id=span_id,
                 request_id=request_id,
                 user_id=user_id,
                 error_id=error_id,
-                metadata=metadata or {},
+                metadata=enriched_meta,
             )
             # Validate before buffering (raises ValueError on bad level)
             payload.to_dict()

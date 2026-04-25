@@ -137,6 +137,12 @@ class HttpMonitorModule:
                 timestamp=timestamp or _now_iso(),
                 user_id=user_id,
                 error_fingerprint=error_fingerprint,
+                # Release-tracking: backend reads release / environment as
+                # first-class columns; the rest (sdk.name/version, platform,
+                # commit.*, dist) ride inside the metadata map.
+                release=self._config.release,
+                environment=self._config.environment,
+                metadata=self._config.release_tags() or None,
             )
             # Validate
             item.to_dict()
