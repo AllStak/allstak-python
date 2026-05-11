@@ -9,8 +9,8 @@ description = "Official Python SDK for AllStak — error tracking, structured lo
 readme = "README.md"
 requires-python = ">=3.9"
 license = { text = "MIT" }
-authors = [{ name = "AllStak", email = "sdk@allstak.dev" }]
-maintainers = [{ name = "AllStak", email = "sdk@allstak.dev" }]
+authors = [{ name = "AllStak", email = "sdk@allstak.sa" }]
+maintainers = [{ name = "AllStak", email = "sdk@allstak.sa" }]
 keywords = [
     "observability",
     "error-tracking",
@@ -49,8 +49,8 @@ dependencies = [
 ]
 
 [project.urls]
-Homepage = "https://allstak.dev"
-Documentation = "https://allstak.dev/docs/sdks/python"
+Homepage = "https://allstak.sa"
+Documentation = "https://allstak.sa/docs/sdks/python"
 Repository = "https://github.com/AllStak/allstak-python"
 Issues = "https://github.com/AllStak/allstak-python/issues"
 Changelog = "https://github.com/AllStak/allstak-python/blob/main/CHANGELOG.md"
