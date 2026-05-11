@@ -24,17 +24,6 @@ View captured events live at [app.allstak.sa](https://app.allstak.sa).
 - Cron heartbeats via `allstak.cron.job` context manager
 - Configurable via `AllStakConfig.from_env()` for 12-factor apps
 
-## What You Get
-
-Once integrated, every event flows to your AllStak dashboard:
-
-- **Errors** — stack traces, breadcrumbs, release + environment tags
-- **Logs** — structured logs bridged from `logging` with search and filters
-- **HTTP** — inbound and outbound request timing, status codes, failed calls
-- **Performance** — slow endpoints and DB queries
-- **Cron monitors** — scheduled job success/failure tracking
-- **Alerts** — email and webhook notifications on regressions
-
 ## Installation
 
 ```bash
@@ -82,6 +71,22 @@ Run the file — the test error appears in your dashboard within seconds.
 | `max_breadcrumbs` | `int` | no | `50` | Breadcrumb ring buffer size |
 
 Environment variables: `ALLSTAK_API_KEY`, `ALLSTAK_HOST`, `ALLSTAK_ENVIRONMENT`, `ALLSTAK_RELEASE`, `ALLSTAK_DEBUG`.
+
+## Fail-Open Reliability
+
+AllStak telemetry is best-effort. Runtime capture APIs enqueue into bounded
+background workers and drop telemetry before harming the host process. If
+AllStak ingest is down, slow, rate-limiting, under maintenance, or unreachable,
+your application should keep serving traffic normally.
+
+- Capture APIs swallow SDK transport failures internally.
+- Error, log, HTTP, replay, trace, and database buffers are bounded.
+- DNS, connection, timeout, 429, 500, and 503 failure modes are covered by
+  automated fail-open tests.
+- Django, Flask, and FastAPI middleware catch SDK failures and return the
+  customer response unchanged.
+- Shutdown is bounded; runtime shutdown paths do not drain through a slow
+  AllStak endpoint.
 
 ## Example Usage
 
