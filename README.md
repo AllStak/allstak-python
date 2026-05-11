@@ -3,7 +3,7 @@
 **Error tracking, logs, and request tracing for Python — works out of the box with Django, Flask, and FastAPI.**
 
 [![PyPI version](https://img.shields.io/pypi/v/allstak.svg)](https://pypi.org/project/allstak/)
-[![CI](https://github.com/allstak-io/allstak-python/actions/workflows/ci.yml/badge.svg)](https://github.com/allstak-io/allstak-python/actions)
+[![CI](https://github.com/AllStak/allstak-python/actions/workflows/ci.yml/badge.svg)](https://github.com/AllStak/allstak-python/actions)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
 Official AllStak SDK for Python — captures exceptions, structured logs, HTTP requests, database queries, distributed traces, cron heartbeats, and session replay for Django, Flask, FastAPI, and plain Python services.
@@ -126,7 +126,7 @@ allstak.init(api_key=os.getenv("ALLSTAK_API_KEY"), host="https://allstak.mycorp.
 
 - Documentation: https://docs.allstak.sa
 - Dashboard: https://app.allstak.sa
-- Source: https://github.com/allstak-io/allstak-python
+- Source: https://github.com/AllStak/allstak-python
 
 ## License
 
