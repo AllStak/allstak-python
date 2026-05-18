@@ -3,6 +3,30 @@
 All notable changes to the AllStak Python SDK.
 This project follows [Semantic Versioning](https://semver.org/).
 
+## 0.1.2 — 2026-05-18
+
+### Fixed
+- **`capture_exception` always returned `None`** (critical functional bug). The
+  client unconditionally raised `AttributeError` on every capture because it
+  referenced `self.config` instead of `self._config` when merging release tags.
+  The exception was caught and swallowed silently, so the user-visible symptom
+  was just `None` return values and no events on the wire. Fix:
+  `src/allstak/client.py:235,288`.
+
+### Added
+- **`AllStak.Sanitizer`** (`src/allstak/sanitize.py`) — recursive scrubber for
+  the full event surface (user, metadata, breadcrumbs.data, contexts, request,
+  response). 25-term canonical denylist; `[REDACTED]` substitution; pure (no
+  caller mutation); cycle-safe via identity set.
+- Sanitizer wired into the wire-bound code path
+  (`src/allstak/modules/errors.py:_send`) so every event POST is scrubbed
+  before transport. Live canary `should_not_leak_python` planted in
+  `password` / `authorization` / `cookie` / `Bearer` / `credit_card` / `ssn` /
+  nested-token fields — verified `leak_pos = 0` across `metadata`,
+  `stack_trace`, `breadcrumbs`, and `message` in production ClickHouse
+  (event `f55a4839-357c-4aaa-a353-f4df4d6ff542`).
+- `tests/test_sanitize.py` — denylist, recursion, cycle, mutation tests.
+
 ## 0.2.0 — 2026-04-11
 
 First production-ready release after a full real-world validation pass against a

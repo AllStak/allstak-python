@@ -232,7 +232,7 @@ class AllStakClient:
             # tags (sdk.name/version, platform, dist, commit.sha/branch) are
             # merged in last so they always reach the wire.
             enriched_meta = dict(metadata) if metadata else {}
-            for k, v in self.config.release_tags().items():
+            for k, v in self._config.release_tags().items():
                 enriched_meta.setdefault(k, v)
             trace_id = self._tracing.get_trace_id()
             span_id = self._tracing.get_current_span_id()
@@ -285,7 +285,7 @@ class AllStakClient:
             # tags (sdk.name/version, platform, dist, commit.sha/branch) are
             # merged in last so they always reach the wire.
             enriched_meta = dict(metadata) if metadata else {}
-            for k, v in self.config.release_tags().items():
+            for k, v in self._config.release_tags().items():
                 enriched_meta.setdefault(k, v)
             trace_id = self._tracing.get_trace_id()
             span_id = self._tracing.get_current_span_id()

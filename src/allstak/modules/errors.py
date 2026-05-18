@@ -10,6 +10,7 @@ from typing import Any, Dict, List, Optional
 from ..config import AllStakConfig
 from ..models.breadcrumb import Breadcrumb
 from ..models.errors import ErrorPayload, RequestContext, UserContext
+from ..sanitize import scrub
 from ..transport import AllStakAuthError, AllStakTransportError, HttpTransport
 
 logger = logging.getLogger("allstak.sdk")
@@ -19,7 +20,7 @@ _DEFAULT_MAX_BREADCRUMBS = 50
 
 
 class ErrorModule:
-    SDK_VERSION = "1.2.0"
+    SDK_VERSION = "0.1.2"
 
     """
     Captures exceptions and sends them to AllStak.
@@ -180,7 +181,11 @@ class ErrorModule:
     # ------------------------------------------------------------------
 
     def _send(self, payload: ErrorPayload) -> Optional[str]:
-        status, body = self._transport.post(_INGEST_PATH, payload.to_dict())
+        # Sanitize the entire wire payload before transport — covers user,
+        # metadata, breadcrumbs, request_context, contexts, and any nested
+        # values that match the canonical denylist. Pure: no caller mutation.
+        wire_payload = scrub(payload.to_dict())
+        status, body = self._transport.post(_INGEST_PATH, wire_payload)
         if status == 202:
             event_id: Optional[str] = None
             data = body.get("data") or {}

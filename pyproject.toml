@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "allstak"
-version = "0.1.1"
+version = "0.1.2"
 description = "Official Python SDK for AllStak — error tracking, structured logs, HTTP + DB monitoring, distributed tracing, and cron monitoring with first-class FastAPI, Django and Flask support"
 readme = "README.md"
 requires-python = ">=3.9"
