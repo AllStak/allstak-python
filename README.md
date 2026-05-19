@@ -37,9 +37,20 @@ Once integrated, every event flows to your AllStak dashboard:
 
 ## Installation
 
-```bash
-pip install allstak
-```
+> **Not yet on PyPI.** `pip install allstak` is reserved but does not
+> resolve a published artifact yet. Until first publish lands (tracked
+> in [`docs/devops/sdk-python-dotnet-first-publish.md`](https://github.com/AllStak/allstak/blob/dev/docs/devops/sdk-python-dotnet-first-publish.md)
+> in the platform monorepo), install directly from source:
+>
+> ```bash
+> pip install "git+https://github.com/AllStak/allstak-python.git@main"
+> ```
+>
+> Once `0.1.x` ships on PyPI, the canonical install becomes:
+>
+> ```bash
+> pip install allstak
+> ```
 
 ## Quick Start
 
