@@ -56,7 +56,7 @@ from .models.replay import ReplayEvent, ReplayPayload
 from .models.heartbeat import HeartbeatPayload
 from .modules.tracing import Span, TracingModule
 
-__version__ = "0.2.0"
+__version__ = "0.1.2"
 
 __all__ = [
     "__version__",
