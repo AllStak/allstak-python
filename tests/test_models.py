@@ -153,6 +153,18 @@ class TestHttpRequestItem:
         assert "userId" not in d
         assert "errorFingerprint" not in d
 
+    def test_correlation_fields(self):
+        d = self._item(
+            request_id="req-1",
+            span_id="b" * 32,
+            parent_span_id="c" * 32,
+            error_fingerprint="RuntimeError",
+        ).to_dict()
+        assert d["requestId"] == "req-1"
+        assert d["spanId"] == "b" * 32
+        assert d["parentSpanId"] == "c" * 32
+        assert d["errorFingerprint"] == "RuntimeError"
+
 
 class TestHttpRequestBatch:
     def _item(self):

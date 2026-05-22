@@ -50,6 +50,15 @@ class HttpRequestItem:
     """ISO-8601 UTC timestamp of when the request started,
     e.g. ``"2026-03-31T12:00:00.000Z"``."""
 
+    request_id: Optional[str] = None
+    """Stable request id used to link request telemetry to logs, spans, and errors."""
+
+    span_id: Optional[str] = None
+    """Span id for the root HTTP span when available."""
+
+    parent_span_id: Optional[str] = None
+    """Parent span id from upstream propagation when available."""
+
     user_id: Optional[str] = None
     """Authenticated user ID (optional)."""
 
@@ -81,6 +90,12 @@ class HttpRequestItem:
             "responseSize": self.response_size,
             "timestamp": self.timestamp,
         }
+        if self.request_id is not None:
+            payload["requestId"] = self.request_id
+        if self.span_id is not None:
+            payload["spanId"] = self.span_id
+        if self.parent_span_id is not None:
+            payload["parentSpanId"] = self.parent_span_id
         if self.user_id is not None:
             payload["userId"] = self.user_id
         if self.error_fingerprint is not None:

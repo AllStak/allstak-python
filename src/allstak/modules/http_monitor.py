@@ -103,6 +103,9 @@ class HttpMonitorModule:
         request_size: int = 0,
         response_size: int = 0,
         trace_id: Optional[str] = None,
+        request_id: Optional[str] = None,
+        span_id: Optional[str] = None,
+        parent_span_id: Optional[str] = None,
         user_id: Optional[str] = None,
         error_fingerprint: Optional[str] = None,
         timestamp: Optional[str] = None,
@@ -125,7 +128,7 @@ class HttpMonitorModule:
         """
         try:
             item = HttpRequestItem(
-                trace_id=trace_id or str(uuid.uuid4()),
+                trace_id=trace_id or uuid.uuid4().hex,
                 direction=direction,
                 method=method,
                 host=host,
@@ -135,6 +138,9 @@ class HttpMonitorModule:
                 request_size=request_size,
                 response_size=response_size,
                 timestamp=timestamp or _now_iso(),
+                request_id=request_id,
+                span_id=span_id,
+                parent_span_id=parent_span_id,
                 user_id=user_id,
                 error_fingerprint=error_fingerprint,
                 # Release-tracking: backend reads release / environment as
@@ -158,6 +164,9 @@ class HttpMonitorModule:
         *,
         user_id: Optional[str] = None,
         trace_id: Optional[str] = None,
+        request_id: Optional[str] = None,
+        span_id: Optional[str] = None,
+        parent_span_id: Optional[str] = None,
     ) -> Generator["_OutboundRecorder", None, None]:
         """
         Context manager that times an outbound HTTP call and records it.
@@ -198,6 +207,9 @@ class HttpMonitorModule:
                 timestamp=start_ts,
                 user_id=user_id,
                 trace_id=trace_id,
+                request_id=request_id,
+                span_id=span_id,
+                parent_span_id=parent_span_id,
                 error_fingerprint=exc_type_name,
             )
 

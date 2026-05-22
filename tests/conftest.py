@@ -3,9 +3,21 @@
 import os
 import pytest
 
-# Real backend settings — used for integration tests
-REAL_API_KEY = os.environ.get("ALLSTAK_API_KEY", "ask_live_o5fmoedqr14vxm47rltn9frjpazjszh7")
+# Real backend settings — used only when integration tests are explicitly enabled.
+REAL_API_KEY = os.environ.get("ALLSTAK_API_KEY", "")
 REAL_HOST = os.environ.get("ALLSTAK_HOST", "http://localhost:8080")
+
+
+def pytest_collection_modifyitems(config, items):
+    if os.environ.get("ALLSTAK_RUN_INTEGRATION") == "1":
+        return
+
+    skip_integration = pytest.mark.skip(
+        reason="set ALLSTAK_RUN_INTEGRATION=1 and ALLSTAK_API_KEY to run live integration tests"
+    )
+    for item in items:
+        if "integration" in item.keywords:
+            item.add_marker(skip_integration)
 
 
 @pytest.fixture

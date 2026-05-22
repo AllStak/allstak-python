@@ -1,41 +1,8 @@
 # allstak
 
-**Error tracking, logs, and request tracing for Python — works out of the box with Django, Flask, and FastAPI.**
+AllStak SDK for Python, Django, Flask, FastAPI, and plain services. Captures exceptions, logs, inbound and outbound HTTP requests, spans, database telemetry, and cron heartbeats.
 
-[![PyPI version](https://img.shields.io/pypi/v/allstak.svg)](https://pypi.org/project/allstak/)
-[![CI](https://github.com/AllStak/allstak-python/actions/workflows/ci.yml/badge.svg)](https://github.com/AllStak/allstak-python/actions)
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
-
-Official AllStak SDK for Python — captures exceptions, structured logs, HTTP requests, database queries, distributed traces, cron heartbeats, and session replay for Django, Flask, FastAPI, and plain Python services.
-
-## Dashboard
-
-View captured events live at [app.allstak.sa](https://app.allstak.sa).
-
-![AllStak dashboard](https://app.allstak.sa/images/dashboard-preview.png)
-
-## Features
-
-- Exception and `sys.excepthook` capture
-- Structured logs with a `logging` handler bridge
-- `requests` auto-instrumentation for breadcrumbs and outbound HTTP telemetry
-- Django / Flask / FastAPI middleware for inbound request capture
-- Distributed tracing with context-managed spans
-- Cron heartbeats via `allstak.cron.job` context manager
-- Configurable via `AllStakConfig.from_env()` for 12-factor apps
-
-## What You Get
-
-Once integrated, every event flows to your AllStak dashboard:
-
-- **Errors** — stack traces, breadcrumbs, release + environment tags
-- **Logs** — structured logs bridged from `logging` with search and filters
-- **HTTP** — inbound and outbound request timing, status codes, failed calls
-- **Performance** — slow endpoints and DB queries
-- **Cron monitors** — scheduled job success/failure tracking
-- **Alerts** — email and webhook notifications on regressions
-
-## Installation
+## Install
 
 > **Not yet on PyPI.** `pip install allstak` is reserved but does not
 > resolve a published artifact yet. Until first publish lands (tracked
@@ -52,9 +19,7 @@ Once integrated, every event flows to your AllStak dashboard:
 > pip install allstak
 > ```
 
-## Quick Start
-
-> Create a project at [app.allstak.sa](https://app.allstak.sa) to get your API key.
+## Setup
 
 ```python
 import os
@@ -62,83 +27,73 @@ import allstak
 
 allstak.init(
     api_key=os.getenv("ALLSTAK_API_KEY"),
-    environment="production",
-    release="myapp@1.0.0",
+    environment=os.getenv("APP_ENV", "production"),
+    release=os.getenv("ALLSTAK_RELEASE"),
 )
 
-allstak.capture_exception(Exception("test: hello from allstak-python"))
+allstak.log.info("worker started")
+allstak.capture_exception(RuntimeError("checkout failed"))
 ```
 
-Run the file — the test error appears in your dashboard within seconds.
+## FastAPI
 
-## Get Your API Key
+```python
+from fastapi import FastAPI
+from allstak.integrations.fastapi import AllStakFastAPI
 
-1. Sign up at [app.allstak.sa](https://app.allstak.sa)
-2. Create a project
-3. Copy your API key from **Project Settings → API Keys**
-4. Export it as `ALLSTAK_API_KEY` or pass it to `allstak.init(...)`
+app = FastAPI()
+AllStakFastAPI(app, service="checkout-api")
+```
+
+## Flask
+
+```python
+from flask import Flask
+from allstak.integrations.flask import AllStakFlask
+
+app = Flask(__name__)
+AllStakFlask(app)
+```
+
+## Django
+
+Add the middleware:
+
+```python
+MIDDLEWARE = [
+    "allstak.integrations.django.AllStakDjangoMiddleware",
+    *MIDDLEWARE,
+]
+```
+
+## Spans
+
+```python
+with allstak.start_span("checkout.authorize", tags={"provider": "payments"}):
+    authorize_payment()
+```
 
 ## Configuration
 
-| Option | Type | Required | Default | Description |
-|---|---|---|---|---|
-| `api_key` | `str` | yes | — | Project API key (`ask_live_…`) |
-| `host` | `str` | no | `https://api.allstak.sa` | Ingest host override |
-| `environment` | `str` | no | — | Deployment env (`production`, `staging`) |
-| `release` | `str` | no | — | App version or release tag |
-| `debug` | `bool` | no | `False` | Verbose SDK logging to stderr |
-| `flush_interval_ms` | `int` | no | `5000` | Background flush cadence |
-| `buffer_size` | `int` | no | `500` | Max items per buffer |
-| `auto_breadcrumbs` | `bool` | no | `True` | Auto-instrument `requests` and `logging` |
-| `max_breadcrumbs` | `int` | no | `50` | Breadcrumb ring buffer size |
+| Option | Description |
+| --- | --- |
+| `api_key` | Project API key. |
+| `host` | Optional ingest host override for self-hosted AllStak. |
+| `environment` | Deployment environment. |
+| `release` | App version or commit SHA. |
+| `flush_interval_ms` | Background flush interval. |
+| `buffer_size` | Max buffered events. |
 
-Environment variables: `ALLSTAK_API_KEY`, `ALLSTAK_HOST`, `ALLSTAK_ENVIRONMENT`, `ALLSTAK_RELEASE`, `ALLSTAK_DEBUG`.
+## Privacy
 
-## Example Usage
+The SDK redacts common sensitive headers and fields. Avoid putting secrets in custom metadata.
 
-Capture an exception with metadata:
+## Troubleshooting
 
-```python
-try:
-    charge_card(order)
-except PaymentError as e:
-    allstak.capture_exception(e, metadata={"order_id": order.id})
-```
-
-Send a structured log:
-
-```python
-allstak.log.info("User signed up", metadata={"user_id": user.id})
-```
-
-Set user context and tags:
-
-```python
-allstak.set_user(id=user.id, email=user.email)
-allstak.set_tag("region", "eu-west-1")
-```
-
-Report a cron run:
-
-```python
-with allstak.cron.job("daily-report"):
-    generate_report()
-```
-
-## Production Endpoint
-
-Production endpoint: `https://api.allstak.sa`. Override via `host` (or `ALLSTAK_HOST`) for self-hosted deployments:
-
-```python
-allstak.init(api_key=os.getenv("ALLSTAK_API_KEY"), host="https://allstak.mycorp.com")
-```
-
-## Links
-
-- Documentation: https://docs.allstak.sa
-- Dashboard: https://app.allstak.sa
-- Source: https://github.com/AllStak/allstak-python
+- No events: confirm `ALLSTAK_API_KEY` is set before `allstak.init(...)`.
+- Missing request telemetry: register the framework integration during app startup.
+- Short-lived script: call `allstak.get_client().flush()` before exit when a client is initialized.
 
 ## License
 
-MIT © AllStak
+MIT

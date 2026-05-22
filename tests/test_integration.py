@@ -1,7 +1,13 @@
 """
-Integration tests — sends REAL requests to the local AllStak backend.
+Integration tests — sends REAL requests to an AllStak backend.
 
-Requires the backend to be running at http://localhost:8080.
+Requires:
+  ALLSTAK_RUN_INTEGRATION=1
+  ALLSTAK_API_KEY=<live test key>
+
+Optional:
+  ALLSTAK_HOST=http://localhost:8080
+
 Skip with: pytest -m "not integration"
 
 These tests validate that:
@@ -12,6 +18,7 @@ These tests validate that:
 
 import time
 import uuid
+import os
 import pytest
 
 from allstak.config import AllStakConfig
@@ -25,8 +32,8 @@ from allstak.client import AllStakClient
 
 pytestmark = pytest.mark.integration
 
-REAL_HOST = "http://localhost:8080"
-REAL_API_KEY = "ask_live_o5fmoedqr14vxm47rltn9frjpazjszh7"
+REAL_HOST = os.environ.get("ALLSTAK_HOST", "http://localhost:8080")
+REAL_API_KEY = os.environ.get("ALLSTAK_API_KEY", "")
 BAD_API_KEY = "ask_bad_key_does_not_exist"
 
 

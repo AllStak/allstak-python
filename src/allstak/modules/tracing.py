@@ -6,6 +6,7 @@ import logging
 import threading
 import time
 import uuid
+from contextvars import ContextVar
 from typing import Any, Callable, Dict, List, Optional
 
 from ..buffer import FlushBuffer
@@ -148,8 +149,12 @@ class TracingModule:
         self._service = ""
         self._environment = config.environment or ""
         self._lock = threading.RLock()
-        self._current_trace_id: Optional[str] = None
-        self._span_stack: List[str] = []
+        self._current_trace_id: ContextVar[Optional[str]] = ContextVar(
+            "allstak_trace_id", default=None
+        )
+        self._span_stack: ContextVar[List[str]] = ContextVar(
+            "allstak_span_stack", default=[]
+        )
         self._flush_buffer: FlushBuffer[Span] = FlushBuffer(
             flush_fn=self._flush_batch,
             maxsize=config.buffer_size,
@@ -166,20 +171,20 @@ class TracingModule:
 
     def get_trace_id(self) -> str:
         """Get the current trace ID, creating one if none exists."""
-        with self._lock:
-            if self._current_trace_id is None:
-                self._current_trace_id = uuid.uuid4().hex
-            return self._current_trace_id
+        trace_id = self._current_trace_id.get()
+        if trace_id is None:
+            trace_id = uuid.uuid4().hex
+            self._current_trace_id.set(trace_id)
+        return trace_id
 
     def set_trace_id(self, trace_id: str) -> None:
         """Set the trace ID explicitly (e.g. from an incoming request header)."""
-        with self._lock:
-            self._current_trace_id = trace_id
+        self._current_trace_id.set(trace_id)
 
     def get_current_span_id(self) -> Optional[str]:
         """Get the current active span ID (top of the stack), or None."""
-        with self._lock:
-            return self._span_stack[-1] if self._span_stack else None
+        stack = self._span_stack.get()
+        return stack[-1] if stack else None
 
     def start_span(
         self,
@@ -209,10 +214,11 @@ class TracingModule:
                 raise
         """
         span_id = uuid.uuid4().hex
-        with self._lock:
-            parent_span_id = self._span_stack[-1] if self._span_stack else ""
-            trace_id = self.get_trace_id()
-            self._span_stack.append(span_id)
+        stack = list(self._span_stack.get())
+        parent_span_id = stack[-1] if stack else ""
+        trace_id = self.get_trace_id()
+        stack.append(span_id)
+        self._span_stack.set(stack)
 
         span = Span(
             trace_id=trace_id,
@@ -230,9 +236,8 @@ class TracingModule:
 
     def reset_trace(self) -> None:
         """Clear the current trace ID and span stack."""
-        with self._lock:
-            self._current_trace_id = None
-            self._span_stack = []
+        self._current_trace_id.set(None)
+        self._span_stack.set([])
 
     def flush(self) -> None:
         """Explicitly flush all completed spans."""
@@ -246,11 +251,12 @@ class TracingModule:
 
     def _on_span_finish(self, span: Span) -> None:
         """Called when a span finishes. Removes it from the stack and buffers it."""
-        with self._lock:
-            try:
-                self._span_stack.remove(span.span_id)
-            except ValueError:
-                pass
+        stack = list(self._span_stack.get())
+        try:
+            stack.remove(span.span_id)
+        except ValueError:
+            pass
+        self._span_stack.set(stack)
         self._flush_buffer.push(span)
 
     def _flush_batch(self, items: List[Span]) -> None:

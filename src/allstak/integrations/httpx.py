@@ -26,7 +26,10 @@ from __future__ import annotations
 
 import logging
 import time
+import uuid
 from typing import Any, Callable, Dict, List
+
+from ..propagation import set_mapping_headers
 
 logger = logging.getLogger("allstak.sdk")
 
@@ -45,6 +48,31 @@ def _build_hooks(allstak_host: str | None) -> Dict[str, List[Callable[..., Any]]
         # httpx 0.20+: request.extensions is a free-form dict; we use it to
         # carry our own start time across the request/response pair.
         request.extensions["allstak_start"] = time.monotonic()
+        client = get_client()
+        if client is None:
+            return
+        try:
+            trace_id = client.get_trace_id()
+            span = client.start_span(
+                "http.client",
+                description=f"{request.method.upper()} {request.url.path or '/'}",
+                tags={
+                    "http.method": request.method.upper(),
+                    "http.url": str(request.url),
+                },
+            )
+            request.extensions["allstak_trace_id"] = trace_id
+            request.extensions["allstak_request_id"] = uuid.uuid4().hex
+            request.extensions["allstak_span"] = span
+            set_mapping_headers(
+                request.headers,
+                trace_id=trace_id,
+                request_id=request.extensions["allstak_request_id"],
+                span_id=span.span_id,
+                overwrite=False,
+            )
+        except Exception as e:
+            logger.debug("allstak httpx request hook failed: %s", e)
 
     def _on_response(response: Any) -> None:
         client = get_client()
@@ -57,6 +85,7 @@ def _build_hooks(allstak_host: str | None) -> Dict[str, List[Callable[..., Any]]
 
         start = request.extensions.get("allstak_start")
         duration_ms = int((time.monotonic() - start) * 1000) if start else 0
+        span = request.extensions.get("allstak_span")
 
         try:
             host = request.url.host
@@ -73,7 +102,13 @@ def _build_hooks(allstak_host: str | None) -> Dict[str, List[Callable[..., Any]]
                 path=str(request.url.path) or "/",
                 status_code=response.status_code,
                 duration_ms=duration_ms,
+                trace_id=request.extensions.get("allstak_trace_id"),
+                request_id=request.extensions.get("allstak_request_id"),
+                span_id=getattr(span, "span_id", None),
             )
+            if span is not None:
+                span.set_tag("http.status_code", str(response.status_code))
+                span.finish("error" if response.status_code >= 500 else "ok")
         except Exception as e:  # never break the host application
             logger.debug("allstak httpx capture failed: %s", e)
 

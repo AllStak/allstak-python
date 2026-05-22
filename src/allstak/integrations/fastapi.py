@@ -29,6 +29,8 @@ import uuid
 from datetime import datetime, timezone
 from typing import Any, Awaitable, Callable, Optional
 
+from ..propagation import set_asgi_headers
+
 logger = logging.getLogger("allstak.sdk")
 
 try:
@@ -72,7 +74,9 @@ class AllStakASGIMiddleware:
         # Extract trace ID from headers or generate a new one
         headers = {k.decode("latin-1").lower(): v.decode("latin-1") for k, v in scope.get("headers", [])}
         incoming_trace = headers.get("x-allstak-trace-id") or headers.get("x-request-id")
+        request_id = headers.get("x-request-id") or headers.get("x-allstak-request-id") or uuid.uuid4().hex
         trace_id: str
+        span = None
         if client is not None:
             if incoming_trace:
                 client.set_trace_id(incoming_trace)
@@ -82,6 +86,14 @@ class AllStakASGIMiddleware:
                 trace_id = client.get_trace_id()
             if self.service:
                 client.tracing.set_service(self.service)
+            span = client.start_span(
+                "http.server",
+                description=f"{scope.get('method', 'GET')} {scope.get('path', '/') or '/'}",
+                tags={
+                    "http.method": scope.get("method", "GET"),
+                    "http.route": scope.get("path", "/") or "/",
+                },
+            )
         else:
             trace_id = incoming_trace or uuid.uuid4().hex
 
@@ -91,6 +103,12 @@ class AllStakASGIMiddleware:
         async def send_wrapper(message: "Message") -> None:
             if message["type"] == "http.response.start":
                 status_code_box["code"] = int(message.get("status", 0))
+                message["headers"] = set_asgi_headers(
+                    message.get("headers", []),
+                    trace_id=trace_id,
+                    request_id=request_id,
+                    span_id=getattr(span, "span_id", None),
+                )
             elif message["type"] == "http.response.body":
                 body = message.get("body") or b""
                 if body:
@@ -130,10 +148,18 @@ class AllStakASGIMiddleware:
                         request_size=req_content_length,
                         response_size=status_code_box["size"],
                         trace_id=trace_id,
+                        request_id=request_id,
+                        span_id=getattr(span, "span_id", None),
                         timestamp=start_ts,
                     )
                 except Exception:
                     pass
+                if span is not None:
+                    try:
+                        span.set_tag("http.status_code", str(status_code_box["code"] or 0))
+                        span.finish("error" if (status_code_box["code"] or 0) >= 500 or exc_to_capture else "ok")
+                    except Exception:
+                        pass
                 if exc_to_capture is not None:
                     try:
                         from ..models.errors import RequestContext
@@ -154,6 +180,7 @@ class AllStakASGIMiddleware:
                                 "http.host": host_header,
                                 "http.status": status_code_box["code"] or 500,
                                 "traceId": trace_id,
+                                "requestId": request_id,
                             },
                         )
                     except Exception:
