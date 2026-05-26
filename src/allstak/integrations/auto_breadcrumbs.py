@@ -93,6 +93,12 @@ def instrument_logging(add_breadcrumb: Callable[..., None]) -> None:
             # Skip our own SDK logs to prevent infinite recursion
             if record.name.startswith("allstak"):
                 return
+            # Skip records the dedicated logging integration already turned into
+            # a breadcrumb / event, to avoid DOUBLE breadcrumbs.
+            from .logging import _ALLSTAK_LOG_HANDLED
+
+            if getattr(record, _ALLSTAK_LOG_HANDLED, False):
+                return
             if record.levelno >= logging.WARNING:
                 level = "error" if record.levelno >= logging.ERROR else "warn"
                 try:

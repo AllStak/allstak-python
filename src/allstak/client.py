@@ -520,6 +520,12 @@ def init(
         except Exception as e:  # pragma: no cover — never fail init
             logger.debug("[AllStak] requests auto-install failed: %s", e)
 
+        try:
+            from .integrations.celery import install_celery
+            install_celery()
+        except Exception as e:  # pragma: no cover — never fail init
+            logger.debug("[AllStak] celery auto-install failed: %s", e)
+
         return _client
 
 
