@@ -10,6 +10,10 @@ logger = logging.getLogger("allstak.sdk")
 
 _SENSITIVE_PARAMS = {"token", "key", "secret", "password", "auth", "api_key"}
 
+# Sentinel attribute stamped on our patched ``Session.send`` so re-init (or both
+# instrumentation paths running) does not double-stack the breadcrumb wrapper.
+_BREADCRUMB_PATCH_MARKER = "_allstak_breadcrumb_patched"
+
 
 def _sanitize_url(url: str) -> str:
     """Strip query params from URL to avoid leaking sensitive data."""
@@ -28,6 +32,12 @@ def instrument_requests(add_breadcrumb: Callable[..., None]) -> None:
         return
 
     original_send = requests.Session.send
+
+    # Idempotency guard: if our breadcrumb wrapper is already installed, do
+    # nothing. Re-initializing the client (or having both this path and the
+    # requests integration active) must not double-wrap Session.send.
+    if getattr(original_send, _BREADCRUMB_PATCH_MARKER, False):
+        return
 
     @functools.wraps(original_send)
     def patched_send(self: Any, request: Any, **kwargs: Any) -> Any:
@@ -66,6 +76,7 @@ def instrument_requests(add_breadcrumb: Callable[..., None]) -> None:
             )
             raise
 
+    setattr(patched_send, _BREADCRUMB_PATCH_MARKER, True)
     requests.Session.send = patched_send  # type: ignore[assignment]
 
 

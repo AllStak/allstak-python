@@ -4,9 +4,10 @@ HTTP transport layer with retry, exponential backoff, and timeout enforcement.
 Contract from SDK guidelines:
 - Connection timeout: 3s
 - Read timeout: 3s
-- Retry on: 5xx, connection timeout, network error
+- Retry on: 5xx, 429, connection timeout, network error
 - No retry on: 400, 401, 403, 422
 - Backoff: 1s → 2s → 4s → 8s  (+jitter 0–500ms each)
+- 429 / 503: honor ``Retry-After`` header (seconds or HTTP-date), clamped to 300s
 - Max 5 attempts
 - On 401: disable SDK
 """
@@ -17,19 +18,78 @@ import logging
 import random
 import sys
 import time
+from email.utils import parsedate_to_datetime
+from datetime import datetime, timezone
 from typing import Any, Dict, Optional, Tuple
 
 import httpx
 
 logger = logging.getLogger("allstak.sdk")
 
-# HTTP status codes we NEVER retry — all 4xx are client errors
-# Guidelines explicitly list 400, 401, 403, 422 but 404 is equally non-retryable
-_NO_RETRY_4XX = True  # All 4xx responses are non-retryable
+# HTTP status codes we NEVER retry — these 4xx are client errors
+# Guidelines explicitly list 400, 401, 403, 422 but 404 is equally non-retryable.
+# 429 (Too Many Requests) is explicitly NOT in this set — it is retryable with
+# backpressure (Retry-After), so it must not be silently dropped.
+_NO_RETRY_4XX = True  # 4xx responses are non-retryable, EXCEPT 429
 _NO_RETRY_STATUSES = frozenset({400, 401, 403, 404, 422})
+
+# Statuses that honor the ``Retry-After`` response header for backpressure.
+_RETRY_AFTER_STATUSES = frozenset({429, 503})
+
+# Maximum delay (seconds) we will ever wait, even if Retry-After asks for more.
+_MAX_RETRY_AFTER = 300.0
 
 # Backoff delays (seconds) for attempts 2-5
 _BACKOFF_DELAYS = [1.0, 2.0, 4.0, 8.0]
+
+
+def parse_retry_after(header_value: Optional[str], now: Optional[datetime] = None) -> float:
+    """
+    Parse an HTTP ``Retry-After`` header value into a delay in seconds.
+
+    Accepts either delta-seconds (an integer, e.g. ``"120"``) or an HTTP-date
+    (e.g. ``"Wed, 21 Oct 2015 07:28:00 GMT"``), per RFC 7231 §7.1.3.
+
+    Returns a non-negative float of seconds to wait. Returns ``0.0`` when the
+    header is absent, empty, or unparseable so the caller can fall back to its
+    normal exponential backoff. The result is clamped to ``[0, 300]``.
+
+    ``now`` is injectable for testing; defaults to the current UTC time.
+    """
+    if header_value is None:
+        return 0.0
+    value = header_value.strip()
+    if not value:
+        return 0.0
+
+    # Form 1: delta-seconds (an integer count of seconds).
+    try:
+        seconds = float(int(value))
+        if seconds < 0:
+            return 0.0
+        return min(seconds, _MAX_RETRY_AFTER)
+    except (ValueError, TypeError):
+        pass
+
+    # Form 2: HTTP-date — wait until that absolute time.
+    try:
+        when = parsedate_to_datetime(value)
+    except (TypeError, ValueError, IndexError):
+        return 0.0
+    if when is None:
+        return 0.0
+
+    reference = now if now is not None else datetime.now(timezone.utc)
+    # Normalize naive datetimes (HTTP-dates without tz info are GMT/UTC).
+    if when.tzinfo is None:
+        when = when.replace(tzinfo=timezone.utc)
+    if reference.tzinfo is None:
+        reference = reference.replace(tzinfo=timezone.utc)
+
+    delta = (when - reference).total_seconds()
+    if delta <= 0:
+        return 0.0
+    return min(delta, _MAX_RETRY_AFTER)
 
 
 class AllStakTransportError(Exception):
@@ -97,8 +157,12 @@ class HttpTransport:
 
         last_exc: Optional[Exception] = None
         last_status: int = 0
+        # Delay requested by a Retry-After header on the most recent response;
+        # 0.0 means "fall back to exponential backoff".
+        retry_after_delay: float = 0.0
 
         for attempt in range(1, self._max_retries + 1):
+            retry_after_delay = 0.0
             try:
                 if self._debug:
                     logger.debug(
@@ -145,6 +209,22 @@ class HttpTransport:
                 if last_status < 400:
                     return last_status, body
 
+                # 429 (rate limited) / 503 → retryable with backpressure.
+                # Honor Retry-After if present; otherwise fall back to backoff.
+                if last_status in _RETRY_AFTER_STATUSES:
+                    retry_after_delay = parse_retry_after(
+                        resp.headers.get("Retry-After")
+                    )
+                    logger.debug(
+                        "[AllStak] Backpressure %d on attempt %d "
+                        "(Retry-After=%s -> %.2fs)",
+                        last_status,
+                        attempt,
+                        resp.headers.get("Retry-After"),
+                        retry_after_delay,
+                    )
+                    # fall through to retry/backoff
+
                 # 5xx → retryable, fall through to backoff
 
             except AllStakAuthError:
@@ -162,9 +242,14 @@ class HttpTransport:
 
             # Back off before next attempt (skip sleep after last attempt)
             if attempt < self._max_retries:
-                delay = _BACKOFF_DELAYS[min(attempt - 1, len(_BACKOFF_DELAYS) - 1)]
-                jitter = random.uniform(0, 0.5)
-                sleep_for = delay + jitter
+                if retry_after_delay > 0:
+                    # Server told us how long to wait — honor it (already
+                    # clamped to <= 300s) without adding jitter.
+                    sleep_for = retry_after_delay
+                else:
+                    delay = _BACKOFF_DELAYS[min(attempt - 1, len(_BACKOFF_DELAYS) - 1)]
+                    jitter = random.uniform(0, 0.5)
+                    sleep_for = delay + jitter
                 logger.debug(
                     "[AllStak] Retrying in %.2fs (attempt %d/%d)",
                     sleep_for,
