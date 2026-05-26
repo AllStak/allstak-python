@@ -5,8 +5,12 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), 'src'))
 
 import allstak
 
+API_KEY = os.environ.get("ALLSTAK_API_KEY")
+if not API_KEY:
+    raise SystemExit("Set ALLSTAK_API_KEY to run the Python SDK heavy E2E test.")
+
 client = allstak.init(
-    api_key="ask_live_4574x2yao33rtjbiuf2q873ltv6vpokb",
+    api_key=API_KEY,
     host="http://localhost:8080",
     environment="e2e-heavy",
 )

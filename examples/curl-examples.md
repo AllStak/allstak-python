@@ -1,9 +1,9 @@
 # AllStak API — curl Examples
 
-Real API key and backend URL used during SDK development and validation.
+Set a project API key in your shell before running these examples.
 
 ```bash
-API_KEY="ask_live_o5fmoedqr14vxm47rltn9frjpazjszh7"
+API_KEY="${ALLSTAK_API_KEY:?Set ALLSTAK_API_KEY first}"
 BASE="https://api.allstak.sa"
 ```
 

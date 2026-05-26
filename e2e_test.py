@@ -4,6 +4,7 @@ End-to-end test for AllStak Python SDK against localhost:8080.
 Tests: tracing (spans), logs, HTTP requests, error capture.
 """
 
+import os
 import time
 import allstak
 
@@ -13,9 +14,13 @@ import allstak
 
 SERVICE = "sdk-python-test"
 ENVIRONMENT = "e2e-testing"
+API_KEY = os.environ.get("ALLSTAK_API_KEY")
+
+if not API_KEY:
+    raise SystemExit("Set ALLSTAK_API_KEY to run the Python SDK E2E test.")
 
 client = allstak.init(
-    api_key="ask_live_4574x2yao33rtjbiuf2q873ltv6vpokb",
+    api_key=API_KEY,
     host="http://localhost:8080",
     environment=ENVIRONMENT,
     debug=True,
