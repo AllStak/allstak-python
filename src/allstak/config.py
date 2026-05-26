@@ -122,6 +122,11 @@ class AllStakConfig:
     False to disable the git + version-constant fallbacks (explicit value and
     release env vars still apply)."""
 
+    auto_register_release: bool = True
+    """When True (default), the SDK registers the resolved release with
+    AllStak at runtime startup via ``/ingest/v1/releases``. This is best-effort
+    and does not require CI/CD integration."""
+
     # --- Release-tracking metadata (optional, auto-detected when possible) ---
     dist: Optional[str] = None
     """Build distribution tag (e.g. ``"linux"``, ``"darwin"``)."""

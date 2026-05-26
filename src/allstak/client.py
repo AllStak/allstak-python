@@ -38,6 +38,7 @@ from __future__ import annotations
 
 import atexit
 import logging
+import os
 import sys
 import threading
 from typing import Any, Callable, Dict, List, Optional
@@ -86,6 +87,7 @@ class AllStakClient:
             max_retries=config.max_retries,
             debug=config.debug,
         )
+        self._register_runtime_release()
 
         # Feature modules
         self._errors = ErrorModule(self._transport, config)
@@ -130,6 +132,36 @@ class AllStakClient:
                 logger.debug("[AllStak] excepthook install failed: %s", e)
 
         logger.debug("[AllStak] SDK initialized (host=%s, debug=%s)", config.host, config.debug)
+
+    def _register_runtime_release(self) -> None:
+        if (
+            not self._config.auto_register_release
+            or not self._config.api_key
+            or not self._config.release
+            or "PYTEST_CURRENT_TEST" in os.environ
+            or os.environ.get("PYTHON_ENV") == "test"
+            or "pytest" in os.path.basename(sys.argv[0])
+        ):
+            return
+
+        def worker() -> None:
+            try:
+                self._transport.post(
+                    "/ingest/v1/releases",
+                    {
+                        "version": self._config.release,
+                        "environment": self._config.environment or "production",
+                        "commitSha": self._config.commit_sha,
+                        "branch": self._config.branch,
+                        "author": f"{self._config.sdk_name}/{self._config.sdk_version}",
+                        "message": "Registered automatically by AllStak Python SDK at runtime",
+                    },
+                )
+            except Exception:
+                logger.debug("[AllStak] runtime release registration failed", exc_info=True)
+
+        thread = threading.Thread(target=worker, name="allstak-release-registration", daemon=True)
+        thread.start()
 
     # ------------------------------------------------------------------
     # Module accessors
@@ -442,6 +474,7 @@ def init(
     before_send: Optional[Callable[[Dict[str, Any]], Optional[Dict[str, Any]]]] = None,
     sample_rate: float = 1.0,
     traces_sample_rate: Optional[float] = None,
+    auto_register_release: bool = True,
 ) -> AllStakClient:
     """
     Initialize the AllStak SDK.
@@ -466,6 +499,8 @@ def init(
     :param sample_rate: Probabilistic error/message sample rate ``[0, 1]``.
     :param traces_sample_rate: Probabilistic span/transaction sample rate
         ``[0, 1]``; ``None`` keeps tracing always-on (backward compatible).
+    :param auto_register_release: Register the resolved release at runtime
+        startup without requiring CI/CD. Default True.
     """
     global _client, _initialized_once
 
@@ -502,6 +537,7 @@ def init(
             before_send=before_send,
             sample_rate=sample_rate,
             traces_sample_rate=traces_sample_rate,
+            auto_register_release=auto_register_release,
         )
         _client = AllStakClient(config)
         _initialized_once = True
