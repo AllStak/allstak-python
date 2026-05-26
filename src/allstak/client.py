@@ -478,6 +478,12 @@ def init(
         except Exception as e:  # pragma: no cover — never fail init
             logger.debug("[AllStak] httpx auto-install failed: %s", e)
 
+        try:
+            from .integrations.requests import install_requests
+            install_requests()
+        except Exception as e:  # pragma: no cover — never fail init
+            logger.debug("[AllStak] requests auto-install failed: %s", e)
+
         return _client
 
 
