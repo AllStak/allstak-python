@@ -3,8 +3,95 @@
 from __future__ import annotations
 
 import os
+import subprocess
 from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, Optional
+
+
+# SDK version constant — the step-4 release fallback. Kept in lockstep with
+# pyproject.toml / __init__.__version__.
+_SDK_VERSION = "0.1.2"
+
+
+# A "git runner" takes a list of git arguments (without the leading "git") and
+# returns the command's stdout as a string. Splitting it out this way keeps the
+# parsing logic pure and seamable: tests inject a fake runner instead of relying
+# on a real repository on disk.
+GitRunner = Callable[[list], str]
+
+# Cache the git-derived release for the lifetime of the process so we only shell
+# out once regardless of how many configs are constructed. ``_NOT_RESOLVED`` is a
+# distinct sentinel so a real ``None`` result (no repo) is still cached and not
+# re-attempted.
+_NOT_RESOLVED = object()
+_git_release_cache: Any = _NOT_RESOLVED
+
+
+def _cached_git_release() -> Optional[str]:
+    """Resolve the git release once and cache it for the process lifetime."""
+    global _git_release_cache
+    if _git_release_cache is _NOT_RESOLVED:
+        try:
+            _git_release_cache = detect_release_from_git()
+        except Exception:
+            _git_release_cache = None
+    return _git_release_cache
+
+
+def _default_git_runner(args: list) -> str:
+    """Shell out to the real ``git`` binary from the process working directory.
+
+    Uses a short timeout and raises on any non-zero exit so the caller can treat
+    every failure mode (git missing, no repo, timeout) uniformly. Never used in
+    unit tests — they pass a fake runner.
+    """
+    completed = subprocess.run(
+        ["git", *args],
+        capture_output=True,
+        text=True,
+        timeout=2.0,
+        check=True,
+    )
+    return completed.stdout
+
+
+def detect_release_from_git(runner: GitRunner = _default_git_runner) -> Optional[str]:
+    """Best-effort release string derived from the local git checkout.
+
+    Resolution:
+      1. ``git describe --tags --always --dirty`` (preferred — gives the nearest
+         tag, or an abbreviated SHA, with a ``-dirty`` suffix on a dirty tree).
+      2. If that fails, ``git rev-parse --short HEAD`` and append ``-dirty`` when
+         ``git status --porcelain`` reports any uncommitted changes.
+
+    Fully guarded: if the runner raises (git missing, no ``.git``, timeout) or
+    returns empty for both strategies, returns ``None``. Never raises.
+
+    NOTE on production honesty: a deployed artifact (wheel / container layer)
+    usually has no ``.git`` directory, so this returns ``None`` there — the
+    version-constant fallback becomes the effective release. Runtime git
+    detection mainly helps source/dev deployments that run inside a checkout.
+    """
+    try:
+        described = runner(["describe", "--tags", "--always", "--dirty"]).strip()
+        if described:
+            return described
+    except Exception:
+        pass
+
+    try:
+        sha = runner(["rev-parse", "--short", "HEAD"]).strip()
+        if not sha:
+            return None
+        try:
+            status = runner(["status", "--porcelain"])
+        except Exception:
+            status = ""
+        if status.strip():
+            return f"{sha}-dirty"
+        return sha
+    except Exception:
+        return None
 
 
 @dataclass
@@ -27,6 +114,13 @@ class AllStakConfig:
 
     release: Optional[str] = None
     """App version or release tag, e.g. ``"v1.4.2"``."""
+
+    auto_detect_release: bool = True
+    """When True (default), and no explicit ``release`` or release env var is
+    found, the SDK tries local git (``git describe``) once at init and finally
+    falls back to the SDK version constant so ``release`` is never empty. Set
+    False to disable the git + version-constant fallbacks (explicit value and
+    release env vars still apply)."""
 
     # --- Release-tracking metadata (optional, auto-detected when possible) ---
     dist: Optional[str] = None
@@ -170,12 +264,22 @@ class AllStakConfig:
                 except Exception:
                     self.sdk_version = None
             if not self.release:
+                # 2. Existing env-var detection (unchanged).
                 self.release = (
                     os.environ.get("ALLSTAK_RELEASE")
                     or os.environ.get("VERCEL_GIT_COMMIT_SHA", "")[:12] or None
                     or os.environ.get("RAILWAY_GIT_COMMIT_SHA", "")[:12] or None
                     or os.environ.get("RENDER_GIT_COMMIT", "")[:12] or None
                 )
+            if not self.release and self.auto_detect_release:
+                # 3. Local git at init (cached, fully guarded — see
+                #    detect_release_from_git for the production-honesty note).
+                self.release = _cached_git_release()
+            if not self.release and self.auto_detect_release:
+                # 4. Final fallback: the SDK's own version so release is never
+                #    empty. In a deployed artifact without a .git this is the
+                #    effective release.
+                self.release = self.sdk_version or _SDK_VERSION
             if not self.commit_sha:
                 self.commit_sha = (
                     os.environ.get("ALLSTAK_COMMIT_SHA")
