@@ -78,7 +78,6 @@ with allstak.start_span("checkout.authorize", tags={"provider": "payments"}):
 | Option | Description |
 | --- | --- |
 | `api_key` | Project API key. |
-| `host` | Optional ingest host override for self-hosted AllStak. |
 | `environment` | Deployment environment. |
 | `release` | App version or commit SHA. |
 | `flush_interval_ms` | Background flush interval. |
