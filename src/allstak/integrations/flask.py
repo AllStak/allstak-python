@@ -120,6 +120,7 @@ class AllStakFlask:
                     trace_id=getattr(flask.g, "_allstak_trace_id", None),
                     request_id=getattr(flask.g, "_allstak_request_id", None),
                     span_id=getattr(getattr(flask.g, "_allstak_span", None), "span_id", None),
+                    sampled=getattr(getattr(flask.g, "_allstak_span", None), "sampled", True),
                 )
         except Exception:
             pass

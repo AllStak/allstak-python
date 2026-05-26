@@ -40,7 +40,7 @@ import atexit
 import logging
 import sys
 import threading
-from typing import Any, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional
 
 from .config import AllStakConfig
 from .models.errors import RequestContext, UserContext
@@ -115,6 +115,19 @@ class AllStakClient:
             enable_db_auto_instrumentation(self._database)
         except Exception as e:
             logger.debug("[AllStak] DB auto-instrumentation failed: %s", e)
+
+        # Install global uncaught-exception hooks (idempotent). Captures
+        # exceptions that escape all application code outside a request.
+        if config.install_excepthook or config.install_threading_excepthook:
+            try:
+                from .excepthook import install as _install_excepthook
+                _install_excepthook(
+                    get_client,
+                    install_sys=config.install_excepthook,
+                    install_threading=config.install_threading_excepthook,
+                )
+            except Exception as e:
+                logger.debug("[AllStak] excepthook install failed: %s", e)
 
         logger.debug("[AllStak] SDK initialized (host=%s, debug=%s)", config.host, config.debug)
 
@@ -215,6 +228,7 @@ class AllStakClient:
         user: Optional[UserContext] = None,
         request_context: Optional[RequestContext] = None,
         metadata: Optional[Dict[str, Any]] = None,
+        mechanism: Optional[Dict[str, Any]] = None,
     ) -> Optional[str]:
         """
         Capture a Python exception and send it to AllStak.
@@ -224,6 +238,8 @@ class AllStakClient:
         :param exc: The exception to capture.
         :param level: Severity level (default ``"error"``).
         :param metadata: Arbitrary key-value metadata.
+        :param mechanism: How the event was captured, e.g.
+            ``{"type": "excepthook", "handled": False}`` for unhandled errors.
         """
         if self._disabled:
             return None
@@ -251,6 +267,7 @@ class AllStakClient:
                 request_context=request_context,
                 trace_id=trace_id or None,
                 metadata=enriched_meta if enriched_meta else None,
+                mechanism=mechanism,
             )
         except AllStakAuthError:
             self._handle_auth_error()
@@ -420,6 +437,11 @@ def init(
     max_retries: int = 5,
     auto_breadcrumbs: bool = True,
     max_breadcrumbs: int = 50,
+    install_excepthook: bool = True,
+    install_threading_excepthook: bool = True,
+    before_send: Optional[Callable[[Dict[str, Any]], Optional[Dict[str, Any]]]] = None,
+    sample_rate: float = 1.0,
+    traces_sample_rate: Optional[float] = None,
 ) -> AllStakClient:
     """
     Initialize the AllStak SDK.
@@ -435,6 +457,15 @@ def init(
     :param flush_interval_ms: Background flush interval in milliseconds.
     :param buffer_size: Max buffered items per feature before eviction.
     :param debug: Enable verbose SDK debug logging to stderr.
+    :param install_excepthook: Install ``sys.excepthook`` to capture uncaught
+        exceptions on the main thread. Default True.
+    :param install_threading_excepthook: Install ``threading.excepthook`` to
+        capture uncaught exceptions in background threads. Default True.
+    :param before_send: Optional callback ``(event_dict) -> event_dict | None``
+        run just before transport; return None to drop the event.
+    :param sample_rate: Probabilistic error/message sample rate ``[0, 1]``.
+    :param traces_sample_rate: Probabilistic span/transaction sample rate
+        ``[0, 1]``; ``None`` keeps tracing always-on (backward compatible).
     """
     global _client, _initialized_once
 
@@ -466,6 +497,11 @@ def init(
             max_retries=max_retries,
             auto_breadcrumbs=auto_breadcrumbs,
             max_breadcrumbs=max_breadcrumbs,
+            install_excepthook=install_excepthook,
+            install_threading_excepthook=install_threading_excepthook,
+            before_send=before_send,
+            sample_rate=sample_rate,
+            traces_sample_rate=traces_sample_rate,
         )
         _client = AllStakClient(config)
         _initialized_once = True

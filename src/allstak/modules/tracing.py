@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import random
 import threading
 import time
 import uuid
@@ -42,6 +43,7 @@ class Span:
         tags: Dict[str, str],
         start_time_millis: int,
         on_finish: Callable[["Span"], None],
+        sampled: bool = True,
     ) -> None:
         self._trace_id = trace_id
         self._span_id = span_id
@@ -57,6 +59,7 @@ class Span:
         self._status: str = "ok"
         self._finished = False
         self._on_finish = on_finish
+        self._sampled = sampled
 
     # -- Public API --
 
@@ -75,6 +78,11 @@ class Span:
     @property
     def is_finished(self) -> bool:
         return self._finished
+
+    @property
+    def sampled(self) -> bool:
+        """Whether this span's trace was sampled (and will be sent)."""
+        return self._sampled
 
     def set_tag(self, key: str, value: str) -> "Span":
         """Set a key-value tag on this span."""
@@ -155,6 +163,11 @@ class TracingModule:
         self._span_stack: ContextVar[List[str]] = ContextVar(
             "allstak_span_stack", default=[]
         )
+        # Per-trace sampling decision. None = "not yet decided for this trace".
+        # When traces_sample_rate is None the SDK is always-on (backward compat).
+        self._sampled: ContextVar[Optional[bool]] = ContextVar(
+            "allstak_trace_sampled", default=None
+        )
         self._flush_buffer: FlushBuffer[Span] = FlushBuffer(
             flush_fn=self._flush_batch,
             maxsize=config.buffer_size,
@@ -180,6 +193,25 @@ class TracingModule:
     def set_trace_id(self, trace_id: str) -> None:
         """Set the trace ID explicitly (e.g. from an incoming request header)."""
         self._current_trace_id.set(trace_id)
+        # A fresh trace context — re-decide sampling on next access.
+        self._sampled.set(None)
+
+    def is_sampled(self) -> bool:
+        """Return the sampling decision for the current trace.
+
+        When ``traces_sample_rate`` is ``None`` (default), tracing is always-on
+        and this returns ``True`` (backward compatible). When a rate is set, the
+        decision is made once per trace (``random.random() < rate``) and cached
+        so every span and the propagated ``traceparent`` agree.
+        """
+        rate = getattr(self._config, "traces_sample_rate", None)
+        if rate is None:
+            return True
+        decided = self._sampled.get()
+        if decided is None:
+            decided = random.random() < rate
+            self._sampled.set(decided)
+        return decided
 
     def get_current_span_id(self) -> Optional[str]:
         """Get the current active span ID (top of the stack), or None."""
@@ -217,6 +249,9 @@ class TracingModule:
         stack = list(self._span_stack.get())
         parent_span_id = stack[-1] if stack else ""
         trace_id = self.get_trace_id()
+        # Decide (or reuse) the per-trace sampling decision so all spans in a
+        # trace and the propagated traceparent agree.
+        sampled = self.is_sampled()
         stack.append(span_id)
         self._span_stack.set(stack)
 
@@ -231,6 +266,7 @@ class TracingModule:
             tags=tags or {},
             start_time_millis=_now_millis(),
             on_finish=self._on_span_finish,
+            sampled=sampled,
         )
         return span
 
@@ -238,6 +274,7 @@ class TracingModule:
         """Clear the current trace ID and span stack."""
         self._current_trace_id.set(None)
         self._span_stack.set([])
+        self._sampled.set(None)
 
     def flush(self) -> None:
         """Explicitly flush all completed spans."""
@@ -257,6 +294,10 @@ class TracingModule:
         except ValueError:
             pass
         self._span_stack.set(stack)
+        # Drop spans whose trace was not sampled — keep the stack consistent
+        # (popped above) but never buffer/send them.
+        if not span.sampled:
+            return
         self._flush_buffer.push(span)
 
     def _flush_batch(self, items: List[Span]) -> None:

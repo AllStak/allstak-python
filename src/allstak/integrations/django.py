@@ -88,6 +88,7 @@ class AllStakMiddleware:
                     trace_id=trace_id,
                     request_id=request_id,
                     span_id=getattr(span, "span_id", None),
+                    sampled=getattr(span, "sampled", True),
                 )
             return response
         except BaseException as exc:

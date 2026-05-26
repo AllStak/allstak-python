@@ -69,6 +69,7 @@ def _build_hooks(allstak_host: str | None) -> Dict[str, List[Callable[..., Any]]
                 trace_id=trace_id,
                 request_id=request.extensions["allstak_request_id"],
                 span_id=span.span_id,
+                sampled=getattr(span, "sampled", True),
                 overwrite=False,
             )
         except Exception as e:

@@ -80,6 +80,7 @@ def install_requests() -> None:
                         trace_id=trace_id,
                         request_id=request_id,
                         span_id=span.span_id,
+                        sampled=getattr(span, "sampled", True),
                         overwrite=False,
                     )
             except Exception as e:  # never break the host request over instrumentation

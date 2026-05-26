@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import random
 import sys
 import traceback
 from typing import Any, Dict, List, Optional
@@ -85,6 +86,7 @@ class ErrorModule:
         request_context: Optional[RequestContext] = None,
         trace_id: Optional[str] = None,
         metadata: Optional[Dict[str, Any]] = None,
+        mechanism: Optional[Dict[str, Any]] = None,
     ) -> Optional[str]:
         """
         Capture a Python exception and send it to AllStak.
@@ -99,6 +101,8 @@ class ErrorModule:
         :param session_id: Link to a session replay session.
         :param user: User context (overrides set_user()).
         :param metadata: Arbitrary key-value metadata dict.
+        :param mechanism: Optional capture mechanism, e.g.
+                          ``{"type": "excepthook", "handled": False}``.
         """
         try:
             frames = self._extract_stack_trace(exc)
@@ -123,6 +127,7 @@ class ErrorModule:
                 platform=getattr(self._config, "platform", None) or "python",
                 dist=getattr(self._config, "dist", None),
                 frames=structured if structured else None,
+                mechanism=mechanism,
             )
             return self._send(payload)
         except AllStakAuthError:
@@ -145,6 +150,7 @@ class ErrorModule:
         request_context: Optional[RequestContext] = None,
         trace_id: Optional[str] = None,
         metadata: Optional[Dict[str, Any]] = None,
+        mechanism: Optional[Dict[str, Any]] = None,
     ) -> Optional[str]:
         """
         Capture an error by class name and message (without a Python exception object).
@@ -168,6 +174,7 @@ class ErrorModule:
                 trace_id=trace_id,
                 metadata=metadata or {},
                 breadcrumbs=breadcrumbs,
+                mechanism=mechanism,
             )
             return self._send(payload)
         except AllStakAuthError:
@@ -181,10 +188,40 @@ class ErrorModule:
     # ------------------------------------------------------------------
 
     def _send(self, payload: ErrorPayload) -> Optional[str]:
-        # Sanitize the entire wire payload before transport — covers user,
+        # Single capture chokepoint. Order:
+        #   1. sample_rate drop (before before_send — dropped events never
+        #      reach the user callback)
+        #   2. before_send hook (may modify the event or drop it via None;
+        #      fail-open if it raises)
+        #   3. PII sanitize
+        #   4. transport
+        #
+        # 1. Probabilistic sampling for error/message events.
+        sample_rate = getattr(self._config, "sample_rate", 1.0)
+        if sample_rate < 1.0 and random.random() >= sample_rate:
+            logger.debug("[AllStak] event dropped by sample_rate=%.3f", sample_rate)
+            return None
+
+        event = payload.to_dict()
+
+        # 2. before_send hook — runs on the structured event before sanitize.
+        before_send = getattr(self._config, "before_send", None)
+        if before_send is not None:
+            try:
+                result = before_send(event)
+                if result is None:
+                    logger.debug("[AllStak] event dropped by before_send")
+                    return None
+                event = result
+            except Exception as cb_err:
+                # Fail open: a user callback must never crash capture. Fall
+                # back to sending the original, un-modified event.
+                logger.debug("[AllStak] before_send raised (fail-open): %s", cb_err)
+
+        # 3. Sanitize the entire wire payload before transport — covers user,
         # metadata, breadcrumbs, request_context, contexts, and any nested
         # values that match the canonical denylist. Pure: no caller mutation.
-        wire_payload = scrub(payload.to_dict())
+        wire_payload = scrub(event)
         status, body = self._transport.post(_INGEST_PATH, wire_payload)
         if status == 202:
             event_id: Optional[str] = None

@@ -108,6 +108,7 @@ class AllStakASGIMiddleware:
                     trace_id=trace_id,
                     request_id=request_id,
                     span_id=getattr(span, "span_id", None),
+                    sampled=getattr(span, "sampled", True),
                 )
             elif message["type"] == "http.response.body":
                 body = message.get("body") or b""

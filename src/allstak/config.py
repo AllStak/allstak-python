@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import os
 from dataclasses import dataclass, field
-from typing import Optional
+from typing import Any, Callable, Dict, Optional
 
 
 @dataclass
@@ -74,6 +74,38 @@ class AllStakConfig:
     max_breadcrumbs: int = 50
     """Maximum number of breadcrumbs kept in the ring buffer."""
 
+    # --- Uncaught exception capture ---
+    install_excepthook: bool = True
+    """When True, install ``sys.excepthook`` to capture uncaught exceptions
+    on the main thread (scripts, top-level code outside any request)."""
+
+    install_threading_excepthook: bool = True
+    """When True, install ``threading.excepthook`` to capture uncaught
+    exceptions raised inside background threads (Python 3.8+)."""
+
+    # --- Event processing & sampling ---
+    before_send: Optional[Callable[[Dict[str, Any]], Optional[Dict[str, Any]]]] = None
+    """Optional hook called once just before an error/message event is handed
+    to the transport. Receives the structured event payload dict and returns a
+    (possibly modified) event dict, or ``None`` to drop the event entirely.
+
+    Runs for both exception and message capture. If the callback raises, the
+    SDK logs the failure and falls back to sending the original event
+    (fail-open) — a user callback must never crash capture."""
+
+    sample_rate: float = 1.0
+    """Probabilistic sample rate for error/message events in ``[0.0, 1.0]``.
+    ``1.0`` keeps everything (default); ``0.0`` drops everything. The drop
+    decision (``random.random() >= sample_rate``) happens before
+    ``before_send`` runs, so dropped events never reach the callback."""
+
+    traces_sample_rate: Optional[float] = None
+    """Probabilistic sample rate for spans/transactions in ``[0.0, 1.0]``.
+    When ``None`` (default), tracing is always-on (backward compatible). When
+    set, span/transaction creation is sampled and the sampled decision drives
+    the propagated ``traceparent`` sampled flag (``-01`` sampled / ``-00``
+    not sampled)."""
+
     @classmethod
     def from_env(cls) -> "AllStakConfig":
         """
@@ -103,6 +135,17 @@ class AllStakConfig:
             raise ValueError("AllStak SDK: api_key must not be empty")
         # Strip trailing slash so we can always do host + "/ingest/..."
         self.host = self.host.rstrip("/")
+        # Clamp sample rates into [0.0, 1.0] so a bad value can't silently
+        # drop everything or wrap around.
+        try:
+            self.sample_rate = max(0.0, min(1.0, float(self.sample_rate)))
+        except (TypeError, ValueError):
+            self.sample_rate = 1.0
+        if self.traces_sample_rate is not None:
+            try:
+                self.traces_sample_rate = max(0.0, min(1.0, float(self.traces_sample_rate)))
+            except (TypeError, ValueError):
+                self.traces_sample_rate = None
         self._apply_release_autodetect()
 
     def _apply_release_autodetect(self) -> None:

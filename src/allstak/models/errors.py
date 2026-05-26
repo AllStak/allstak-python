@@ -115,6 +115,10 @@ class ErrorPayload:
     frames: Optional[List[Dict[str, Any]]] = None
     """Structured stack frames matching ErrorIngestRequest.Frame on the backend."""
 
+    mechanism: Optional[Dict[str, Any]] = None
+    """How the event was captured, e.g. ``{"type": "excepthook", "handled": False}``.
+    ``handled=False`` marks the error as unhandled (uncaught) by the application."""
+
     def to_dict(self) -> Dict[str, Any]:
         if self.level not in ERROR_LEVELS:
             raise ValueError(
@@ -156,4 +160,6 @@ class ErrorPayload:
             payload["dist"] = self.dist
         if self.frames:
             payload["frames"] = self.frames
+        if self.mechanism:
+            payload["mechanism"] = self.mechanism
         return payload

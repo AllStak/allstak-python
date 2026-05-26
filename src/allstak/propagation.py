@@ -24,16 +24,27 @@ def merge_baggage(existing: Optional[str], trace_id: str, request_id: Optional[s
     return ",".join(preserved)
 
 
+def _trace_flags(sampled: bool) -> str:
+    """W3C ``traceparent`` trace-flags byte: ``01`` sampled, ``00`` not sampled."""
+    return "01" if sampled else "00"
+
+
 def set_mapping_headers(
     headers: object,
     *,
     trace_id: str,
     request_id: Optional[str] = None,
     span_id: Optional[str] = None,
+    sampled: bool = True,
     merge_existing: bool = True,
     overwrite: bool = True,
 ) -> None:
-    """Set trace headers on dict-like request/response headers."""
+    """Set trace headers on dict-like request/response headers.
+
+    ``sampled`` drives the W3C ``traceparent`` trace-flags byte (``-01``
+    when sampled, ``-00`` when not). Defaults to ``True`` for backward
+    compatibility with the previous always-sampled behaviour.
+    """
 
     def set_header(name: str, value: str, *, force: bool = False) -> None:
         if not force and not overwrite and hasattr(headers, "get") and headers.get(name):  # type: ignore[attr-defined]
@@ -45,7 +56,7 @@ def set_mapping_headers(
         set_header("x-allstak-request-id", request_id)
     if span_id:
         set_header("x-allstak-span-id", span_id)
-        set_header("traceparent", f"00-{trace_id}-{span_id[:16]}-01")
+        set_header("traceparent", f"00-{trace_id}-{span_id[:16]}-{_trace_flags(sampled)}")
 
     baggage = merge_baggage(
         headers.get("baggage") if merge_existing and hasattr(headers, "get") else None,  # type: ignore[attr-defined]
@@ -63,6 +74,7 @@ def set_asgi_headers(
     trace_id: str,
     request_id: Optional[str] = None,
     span_id: Optional[str] = None,
+    sampled: bool = True,
 ) -> list[tuple[bytes, bytes]]:
     existing: list[tuple[bytes, bytes]] = []
     baggage: Optional[str] = None
@@ -83,7 +95,7 @@ def set_asgi_headers(
         add("x-allstak-request-id", request_id)
     if span_id:
         add("x-allstak-span-id", span_id)
-        add("traceparent", f"00-{trace_id}-{span_id[:16]}-01")
+        add("traceparent", f"00-{trace_id}-{span_id[:16]}-{_trace_flags(sampled)}")
     add("baggage", merge_baggage(baggage, trace_id, request_id, span_id))
     add("allstak-baggage", allstak_baggage(trace_id, request_id, span_id))
     return existing
