@@ -181,6 +181,32 @@ class AllStakConfig:
     crash-free status. Set False to opt out entirely. Session tracking is
     always fail-open and is automatically skipped under a unit-test runtime."""
 
+    # --- Offline / persistent event queue (survive restart + outage) ---
+    offline_storage: bool = True
+    """When True (default), telemetry that cannot be delivered (network down,
+    retries exhausted, or buffered at shutdown) is written PII-scrubbed to a
+    filesystem spool and replayed on the next SDK init — the server analogue of
+    Sentry's offline envelope cache. Only error/log/span/http/db telemetry is
+    persisted; session lifecycle calls are live-only. Always fail-open: if the
+    spool directory is unwritable (read-only FS, serverless, sandbox) the SDK
+    silently falls back to its in-memory behaviour. Set False to disable."""
+
+    offline_queue_dir: Optional[str] = None
+    """Override the spool directory. When None (default) a per-backend directory
+    under the system temp dir is used (``<tmp>/allstak-spool/<host-hash>``)."""
+
+    offline_max_events: int = 100
+    """Maximum number of persisted events kept on disk. Oldest are dropped when
+    full."""
+
+    offline_max_bytes: int = 5 * 1024 * 1024
+    """Maximum total bytes of the spool (default ~5 MiB). Oldest are dropped
+    when over budget."""
+
+    offline_max_age_s: float = 48 * 3600
+    """Maximum age (seconds) of a persisted event before it is dropped on the
+    next bound-enforcement pass (default 48h)."""
+
     # --- Uncaught exception capture ---
     install_excepthook: bool = True
     """When True, install ``sys.excepthook`` to capture uncaught exceptions

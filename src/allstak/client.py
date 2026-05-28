@@ -87,7 +87,31 @@ class AllStakClient:
             max_retries=config.max_retries,
             debug=config.debug,
         )
+
+        # Offline/persistent event queue. Attach the spool to the transport so
+        # undeliverable payloads are persisted (PII-scrubbed) instead of dropped,
+        # then asynchronously replay anything left from a previous run. Entirely
+        # fail-open and a no-op when opted out or the spool dir is unwritable.
+        self._spool = None
+        if config.offline_storage:
+            try:
+                from .spool import EventSpool, default_spool_dir
+
+                directory = config.offline_queue_dir or default_spool_dir(config.host)
+                spool = EventSpool(
+                    directory,
+                    max_events=config.offline_max_events,
+                    max_bytes=config.offline_max_bytes,
+                    max_age_s=config.offline_max_age_s,
+                    enabled=True,
+                )
+                self._transport.set_spool(spool)
+                self._spool = spool
+            except Exception as e:  # pragma: no cover — never fail init
+                logger.debug("[AllStak] offline spool init failed: %s", e)
+
         self._register_runtime_release()
+        self._drain_offline_spool()
 
         # Feature modules
         self._errors = ErrorModule(self._transport, config)
@@ -200,6 +224,21 @@ class AllStakClient:
 
         thread = threading.Thread(target=worker, name="allstak-release-registration", daemon=True)
         thread.start()
+
+    def _drain_offline_spool(self) -> None:
+        """Replay events persisted by a previous run, on a daemon thread.
+
+        Fail-open and skipped under the SDK's own test runtime (mirrors release
+        registration) so unit tests do not make network calls. Re-sends through
+        the existing transport so retry/backoff/circuit-breaker still apply.
+        """
+        spool = getattr(self, "_spool", None)
+        if spool is None or self._is_test_runtime():
+            return
+        try:
+            spool.drain_async(self._transport.send_for_drain)
+        except Exception as e:  # pragma: no cover — never fail init
+            logger.debug("[AllStak] offline spool drain failed: %s", e)
 
     # ------------------------------------------------------------------
     # Module accessors
@@ -573,6 +612,11 @@ def init(
     traces_sample_rate: Optional[float] = None,
     auto_register_release: bool = True,
     enable_auto_session_tracking: bool = True,
+    offline_storage: bool = True,
+    offline_queue_dir: Optional[str] = None,
+    offline_max_events: int = 100,
+    offline_max_bytes: int = 5 * 1024 * 1024,
+    offline_max_age_s: float = 48 * 3600,
 ) -> AllStakClient:
     """
     Initialize the AllStak SDK.
@@ -602,6 +646,15 @@ def init(
     :param enable_auto_session_tracking: Open one release-health session for
         the running process at init and close it on graceful shutdown with the
         final crash-free status. Default True; set False to opt out.
+    :param offline_storage: Persist undeliverable telemetry (network down /
+        retries exhausted / buffered at shutdown) PII-scrubbed to a filesystem
+        spool and replay it on the next init. Default True; fail-open. Set
+        False to disable.
+    :param offline_queue_dir: Override the spool directory (default: a
+        per-backend dir under the system temp dir).
+    :param offline_max_events: Max persisted events kept (oldest dropped).
+    :param offline_max_bytes: Max total spool bytes (oldest dropped).
+    :param offline_max_age_s: Max age (seconds) of a persisted event.
     """
     global _client, _initialized_once
 
@@ -640,6 +693,11 @@ def init(
             traces_sample_rate=traces_sample_rate,
             auto_register_release=auto_register_release,
             enable_auto_session_tracking=enable_auto_session_tracking,
+            offline_storage=offline_storage,
+            offline_queue_dir=offline_queue_dir,
+            offline_max_events=offline_max_events,
+            offline_max_bytes=offline_max_bytes,
+            offline_max_age_s=offline_max_age_s,
         )
         _client = AllStakClient(config)
         _initialized_once = True

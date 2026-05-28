@@ -17,6 +17,7 @@ from __future__ import annotations
 import logging
 import random
 import sys
+import threading
 import time
 from email.utils import parsedate_to_datetime
 from datetime import datetime, timezone
@@ -117,6 +118,7 @@ class HttpTransport:
         read_timeout: float = 3.0,
         max_retries: int = 5,
         debug: bool = False,
+        spool: Optional[Any] = None,
     ) -> None:
         self._api_key = api_key
         self._host = host.rstrip("/")
@@ -129,6 +131,17 @@ class HttpTransport:
         self._max_retries = max(1, min(max_retries, 5))
         self._debug = debug
         self._disabled = False  # set True on 401
+        # Optional offline spool. When present, a payload that cannot be
+        # delivered (retries exhausted / network down) is written to a
+        # persistent store instead of being dropped, and replayed on the next
+        # init. ``_draining`` suppresses re-persisting an entry that is itself
+        # being replayed so a transient failure during drain does not duplicate.
+        self._spool = spool
+        self._draining = threading.local()
+
+    def set_spool(self, spool: Optional[Any]) -> None:
+        """Attach (or detach) the offline spool after construction."""
+        self._spool = spool
 
     # ------------------------------------------------------------------
     # Public interface
@@ -258,12 +271,47 @@ class HttpTransport:
                 )
                 time.sleep(sleep_for)
 
+        # All retries exhausted (network down / persistent 5xx / 429). Before
+        # dropping, hand the payload to the offline spool so it survives a
+        # restart and is replayed on the next init. Persisting is fail-open and
+        # is skipped while this same payload is being replayed (drain) to avoid
+        # duplicating it on a transient re-failure. The spool itself decides
+        # which paths are persistable (session lifecycle is excluded).
+        self._maybe_persist(path, payload)
+
         msg = (
             f"AllStak SDK: all {self._max_retries} attempts failed for POST {path}. "
             f"Last status: {last_status}. Last error: {last_exc}"
         )
         logger.debug(msg)
         raise AllStakTransportError(msg)
+
+    def send_for_drain(
+        self, path: str, payload: Dict[str, Any]
+    ) -> Tuple[int, Dict[str, Any]]:
+        """Re-send a spooled payload during drain.
+
+        Identical to :meth:`post` but flags the call so a transient failure does
+        not re-persist the entry (the spool keeps the on-disk copy until the
+        send actually succeeds or is permanently rejected).
+        """
+        self._draining.active = True
+        try:
+            return self.post(path, payload)
+        finally:
+            self._draining.active = False
+
+    def _maybe_persist(self, path: str, payload: Dict[str, Any]) -> None:
+        """Persist an undeliverable payload to the spool. Never raises."""
+        spool = self._spool
+        if spool is None:
+            return
+        if getattr(self._draining, "active", False):
+            return
+        try:
+            spool.persist(path, payload)
+        except Exception as exc:  # pragma: no cover — spool is itself fail-open
+            logger.debug("[AllStak] spool persist failed (ignored): %s", exc)
 
     def is_disabled(self) -> bool:
         """Returns True if the transport has been disabled (e.g. on 401)."""

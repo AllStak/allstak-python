@@ -48,6 +48,7 @@ from .client import (
     init,
 )
 from .config import AllStakConfig
+from .spool import EventSpool
 from .models.breadcrumb import Breadcrumb
 from .models.errors import RequestContext, UserContext
 from .models.logs import LOG_LEVELS
@@ -66,6 +67,8 @@ __all__ = [
     # Config
     "AllStakConfig",
     "AllStakClient",
+    # Offline persistence
+    "EventSpool",
     # Models
     "Breadcrumb",
     "UserContext",
