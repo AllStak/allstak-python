@@ -1,0 +1,247 @@
+"""
+Release-health session tracking — Sentry-style "one session per process".
+
+On SDK init the client opens a single :class:`Session` for the running
+process and POSTs ``/ingest/v1/sessions/start``. Errored / crashed
+transitions are recorded purely in-memory; only the terminal
+``/ingest/v1/sessions/end`` POST (on graceful shutdown) performs the second
+network round-trip, so per-error latency is unaffected.
+
+This mirrors the Java SDK's ``dev.allstak.session`` package
+(:file:`Session.java`, :file:`SessionStatus.java`, :file:`SessionTracker.java`)
+and the same OK / ERRORED / CRASHED / ABNORMAL status model.
+
+Design rules (all fail-open — session tracking must never crash or block
+the host application):
+
+* Sessions are NEVER sampled — the start/end POSTs always fire regardless of
+  ``sample_rate``.
+* ``start()`` runs the network POST on a daemon thread so SDK init never
+  blocks on a round-trip.
+* ``end()`` is best-effort with a short timeout and is idempotent.
+* Status escalates monotonically: OK → ERRORED → CRASHED. A crash is never
+  downgraded back to errored, and the server also refuses to downgrade.
+"""
+
+from __future__ import annotations
+
+import logging
+import threading
+import time
+import uuid
+from typing import Any, Optional
+
+logger = logging.getLogger("allstak.sdk")
+
+_PATH_START = "/ingest/v1/sessions/start"
+_PATH_END = "/ingest/v1/sessions/end"
+
+
+class SessionStatus:
+    """Lifecycle status wire values — match the backend contract / Sentry.
+
+    * ``ok``       — session ended normally with at most non-fatal logs.
+    * ``errored``  — at least one *handled* error-level event landed during
+      the session, but the process kept running.
+    * ``crashed``  — an unhandled / fatal exception ended the process (the SDK
+      only reports this when it observes the uncaught exception itself).
+    * ``abnormal`` — process ended without a normal flush. Reserved.
+    """
+
+    OK = "ok"
+    ERRORED = "errored"
+    CRASHED = "crashed"
+    ABNORMAL = "abnormal"
+
+
+class Session:
+    """A single release-health session — one per process in server mode.
+
+    Status mutations are guarded by a lock so concurrent
+    ``record_error`` / ``record_crash`` calls from multiple threads are safe,
+    mirroring the atomic semantics of the Java :class:`Session`.
+    """
+
+    def __init__(self, session_id: Optional[str] = None) -> None:
+        self.id = session_id or str(uuid.uuid4())
+        self._started_at_ms = int(time.time() * 1000)
+        self._status = SessionStatus.OK
+        self._error_count = 0
+        self._lock = threading.Lock()
+
+    @property
+    def status(self) -> str:
+        with self._lock:
+            return self._status
+
+    @property
+    def error_count(self) -> int:
+        with self._lock:
+            return self._error_count
+
+    def record_error(self) -> None:
+        """Bump status to ERRORED unless already escalated to a terminal status."""
+        with self._lock:
+            self._error_count += 1
+            if self._status == SessionStatus.OK:
+                self._status = SessionStatus.ERRORED
+
+    def record_crash(self) -> None:
+        """Mark a terminal CRASHED status (overrides ERRORED). Used by the
+        uncaught-exception handler."""
+        with self._lock:
+            self._error_count += 1
+            self._status = SessionStatus.CRASHED
+
+    def record_abnormal_exit(self) -> None:
+        """Promote to ABNORMAL only if still OK or ERRORED."""
+        with self._lock:
+            if self._status in (SessionStatus.OK, SessionStatus.ERRORED):
+                self._status = SessionStatus.ABNORMAL
+
+    def duration_ms(self) -> int:
+        """Duration from start to now in milliseconds, floored at 0."""
+        return max(0, int(time.time() * 1000) - self._started_at_ms)
+
+
+class SessionTracker:
+    """Server-mode single-session tracker.
+
+    One instance per :class:`~allstak.client.AllStakClient`. Re-entrancy safe:
+    once started a second :meth:`start` is a no-op; once ended the tracker does
+    not re-arm. All network failures are swallowed.
+    """
+
+    def __init__(self, transport: Any, config: Any) -> None:
+        self._transport = transport
+        self._config = config
+        self._lock = threading.Lock()
+        self._active: Optional[Session] = None
+        self._ended = False
+
+    # ------------------------------------------------------------------
+    # Lifecycle
+    # ------------------------------------------------------------------
+
+    def start(self) -> Optional[Session]:
+        """Open the session and POST ``/sessions/start`` on a daemon thread.
+
+        Idempotent. Returns the active session (existing one on a repeat call).
+        Sessions are never sampled — the POST always fires when a release is
+        resolvable and the transport is enabled.
+        """
+        with self._lock:
+            if self._active is not None:
+                return self._active
+            session = Session()
+            self._active = session
+
+        # No release ⇒ release-health cannot attribute the session. Keep the
+        # in-memory tracker so errored/crashed transitions still set a sensible
+        # final status, but skip the network call (mirrors the Java SDK).
+        release = self._effective_release()
+        if self._transport_disabled() or not release:
+            return session
+
+        payload = {
+            "sessionId": session.id,
+            "release": release,
+            "environment": getattr(self._config, "environment", None),
+            "userId": self._effective_user_id(),
+            "sdkName": getattr(self._config, "sdk_name", None),
+            "sdkVersion": getattr(self._config, "sdk_version", None),
+            "platform": getattr(self._config, "platform", None),
+        }
+
+        def worker() -> None:
+            try:
+                self._transport.post(_PATH_START, payload)
+                logger.debug("[AllStak] session started: %s", session.id)
+            except Exception as exc:  # never crash app boot on a network error
+                logger.debug("[AllStak] session start failed: %s", exc)
+
+        thread = threading.Thread(
+            target=worker, name="allstak-session-start", daemon=True
+        )
+        thread.start()
+        return session
+
+    def current(self) -> Optional[Session]:
+        """The active session, or ``None`` if not started or already ended."""
+        with self._lock:
+            return None if self._ended else self._active
+
+    def record_error(self) -> None:
+        """Record a handled error-level event. No I/O."""
+        session = self.current()
+        if session is not None:
+            session.record_error()
+
+    def record_crash(self) -> None:
+        """Record an unhandled / fatal crash. No I/O — the end POST carries it."""
+        session = self.current()
+        if session is not None:
+            session.record_crash()
+
+    def end(self, final_status: Optional[str] = None) -> None:
+        """Terminate the session and POST ``/sessions/end``. Idempotent.
+
+        Best-effort, never blocks indefinitely, never raises. If
+        ``final_status`` is ``None`` the session's accumulated status is used.
+        """
+        with self._lock:
+            if self._ended or self._active is None:
+                self._ended = True
+                return
+            session = self._active
+            self._active = None
+            self._ended = True
+
+        status = final_status or session.status
+        release = self._effective_release()
+        if self._transport_disabled() or not release:
+            return
+
+        payload = {
+            "sessionId": session.id,
+            "durationMs": session.duration_ms(),
+            "status": status,
+        }
+        try:
+            self._transport.post(_PATH_END, payload)
+            logger.debug(
+                "[AllStak] session ended: %s status=%s errors=%d",
+                session.id,
+                status,
+                session.error_count,
+            )
+        except Exception as exc:  # best-effort — shutdown must not raise
+            logger.debug("[AllStak] session end failed: %s", exc)
+
+    # ------------------------------------------------------------------
+    # Internals
+    # ------------------------------------------------------------------
+
+    def _transport_disabled(self) -> bool:
+        try:
+            return bool(self._transport.is_disabled())
+        except Exception:
+            return False
+
+    def _effective_release(self) -> Optional[str]:
+        """Release for the session, falling back to the SDK version when no
+        release is configured (per the task contract — release is REQUIRED)."""
+        release = getattr(self._config, "release", None)
+        if release:
+            return release
+        return getattr(self._config, "sdk_version", None)
+
+    def _effective_user_id(self) -> Optional[str]:
+        """Resolve the configured/default user id if one was set, else ``None``."""
+        getter = getattr(self, "_user_id_getter", None)
+        if getter is None:
+            return None
+        try:
+            return getter()
+        except Exception:
+            return None

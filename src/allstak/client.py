@@ -99,6 +99,23 @@ class AllStakClient:
         self._tracing = TracingModule(self._transport, config)
         self._database = DatabaseModule(self._transport, config)
 
+        # Release-health: open one session for this process (Sentry-style
+        # "one session per process"). Skipped under a unit-test runtime
+        # (mirrors the release-registration guard) and when opted out via
+        # config.enable_auto_session_tracking. Fully fail-open.
+        self._session_tracker = None
+        if config.enable_auto_session_tracking and not self._is_test_runtime():
+            try:
+                from .session import SessionTracker
+
+                tracker = SessionTracker(self._transport, config)
+                # Let the session carry the configured/default user id when set.
+                tracker._user_id_getter = self._current_user_id
+                tracker.start()
+                self._session_tracker = tracker
+            except Exception as e:  # pragma: no cover — never fail init
+                logger.debug("[AllStak] session tracking start failed: %s", e)
+
         # Best-effort flush on interpreter exit
         atexit.register(self._shutdown)
 
@@ -133,14 +150,35 @@ class AllStakClient:
 
         logger.debug("[AllStak] SDK initialized (host=%s, debug=%s)", config.host, config.debug)
 
+    @staticmethod
+    def _is_test_runtime() -> bool:
+        """Whether we appear to be running under a unit-test harness.
+
+        Mirrors the release-registration guard so session tracking does not
+        POST ``/ingest/v1/sessions/*`` during the SDK's own test suite
+        (matches the Java SDK's ``isLikelyTestRuntime`` idea).
+        """
+        return (
+            "PYTEST_CURRENT_TEST" in os.environ
+            or os.environ.get("PYTHON_ENV") == "test"
+            or "pytest" in os.path.basename(sys.argv[0])
+            or "unittest" in os.path.basename(sys.argv[0])
+        )
+
+    def _current_user_id(self) -> Optional[str]:
+        """Return the configured/default user id, if a user context is set."""
+        try:
+            user = getattr(self._errors, "_current_user", None)
+            return getattr(user, "id", None) if user is not None else None
+        except Exception:
+            return None
+
     def _register_runtime_release(self) -> None:
         if (
             not self._config.auto_register_release
             or not self._config.api_key
             or not self._config.release
-            or "PYTEST_CURRENT_TEST" in os.environ
-            or os.environ.get("PYTHON_ENV") == "test"
-            or "pytest" in os.path.basename(sys.argv[0])
+            or self._is_test_runtime()
         ):
             return
 
@@ -289,18 +327,26 @@ class AllStakClient:
             if span_id and "spanId" not in enriched_meta:
                 enriched_meta["spanId"] = span_id
 
-            return self._errors.capture_exception(
+            # Attach the active release-health session id so the backend's
+            # error consumer can mark the session errored/crashed. The caller
+            # may override it explicitly.
+            effective_session_id = session_id or self._active_session_id()
+
+            event_id = self._errors.capture_exception(
                 exc,
                 level=level,
                 environment=environment,
                 release=release,
-                session_id=session_id,
+                session_id=effective_session_id,
                 user=user,
                 request_context=request_context,
                 trace_id=trace_id or None,
                 metadata=enriched_meta if enriched_meta else None,
                 mechanism=mechanism,
             )
+            # Local release-health status transition.
+            self._record_session_status(level, mechanism)
+            return event_id
         except AllStakAuthError:
             self._handle_auth_error()
             return None
@@ -343,17 +389,24 @@ class AllStakClient:
             if span_id and "spanId" not in enriched_meta:
                 enriched_meta["spanId"] = span_id
 
-            return self._errors.capture_error(
+            # Attach the active release-health session id (caller may override).
+            effective_session_id = session_id or self._active_session_id()
+
+            event_id = self._errors.capture_error(
                 exception_class,
                 message,
                 stack_trace=stack_trace,
                 level=level,
                 environment=environment,
                 release=release,
-                session_id=session_id,
+                session_id=effective_session_id,
                 user=user,
                 metadata=enriched_meta if enriched_meta else None,
             )
+            # Local release-health status transition (capture_error is always
+            # a handled capture, so it can only escalate to errored).
+            self._record_session_status(level, None)
+            return event_id
         except AllStakAuthError:
             self._handle_auth_error()
             return None
@@ -423,6 +476,42 @@ class AllStakClient:
         except Exception as e:
             logger.debug("[AllStak] flush() error: %s", e)
 
+    def _active_session_id(self) -> Optional[str]:
+        """The current release-health session id, or None if not tracking."""
+        tracker = getattr(self, "_session_tracker", None)
+        if tracker is None:
+            return None
+        try:
+            session = tracker.current()
+            return session.id if session is not None else None
+        except Exception:
+            return None
+
+    def _record_session_status(
+        self, level: str, mechanism: Optional[Dict[str, Any]]
+    ) -> None:
+        """Transition the local session status for a captured event.
+
+        An UNHANDLED capture (``mechanism.handled is False``) or a ``fatal``
+        level marks the session crashed; any other ``error``/``fatal`` capture
+        marks it errored. Lower levels (warning/info) leave it unchanged.
+        Never raises.
+        """
+        tracker = getattr(self, "_session_tracker", None)
+        if tracker is None:
+            return
+        try:
+            handled = True
+            if mechanism is not None:
+                handled = mechanism.get("handled", True)
+            effective_level = (level or "error").lower()
+            if handled is False or effective_level == "fatal":
+                tracker.record_crash()
+            elif effective_level == "error":
+                tracker.record_error()
+        except Exception as e:  # pragma: no cover — status update must not raise
+            logger.debug("[AllStak] session status update failed: %s", e)
+
     def _shutdown(self) -> None:
         """Called automatically at interpreter exit (via atexit)."""
         try:
@@ -433,6 +522,14 @@ class AllStakClient:
             self._database.shutdown()
         except Exception:
             pass
+        # Close the release-health session last so the end POST reflects the
+        # final accumulated status. Best-effort, never blocks or raises.
+        tracker = getattr(self, "_session_tracker", None)
+        if tracker is not None:
+            try:
+                tracker.end(None)
+            except Exception:
+                pass
 
     # ------------------------------------------------------------------
     # Internal
@@ -475,6 +572,7 @@ def init(
     sample_rate: float = 1.0,
     traces_sample_rate: Optional[float] = None,
     auto_register_release: bool = True,
+    enable_auto_session_tracking: bool = True,
 ) -> AllStakClient:
     """
     Initialize the AllStak SDK.
@@ -501,6 +599,9 @@ def init(
         ``[0, 1]``; ``None`` keeps tracing always-on (backward compatible).
     :param auto_register_release: Register the resolved release at runtime
         startup without requiring CI/CD. Default True.
+    :param enable_auto_session_tracking: Open one release-health session for
+        the running process at init and close it on graceful shutdown with the
+        final crash-free status. Default True; set False to opt out.
     """
     global _client, _initialized_once
 
@@ -538,6 +639,7 @@ def init(
             sample_rate=sample_rate,
             traces_sample_rate=traces_sample_rate,
             auto_register_release=auto_register_release,
+            enable_auto_session_tracking=enable_auto_session_tracking,
         )
         _client = AllStakClient(config)
         _initialized_once = True

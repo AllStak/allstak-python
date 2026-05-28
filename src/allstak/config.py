@@ -173,6 +173,14 @@ class AllStakConfig:
     max_breadcrumbs: int = 50
     """Maximum number of breadcrumbs kept in the ring buffer."""
 
+    # --- Release-health session tracking ---
+    enable_auto_session_tracking: bool = True
+    """When True (default), the SDK opens one release-health session for the
+    running process at init (POST ``/ingest/v1/sessions/start``) and closes it
+    on graceful shutdown (POST ``/ingest/v1/sessions/end``) with the final
+    crash-free status. Set False to opt out entirely. Session tracking is
+    always fail-open and is automatically skipped under a unit-test runtime."""
+
     # --- Uncaught exception capture ---
     install_excepthook: bool = True
     """When True, install ``sys.excepthook`` to capture uncaught exceptions

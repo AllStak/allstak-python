@@ -222,6 +222,14 @@ class ErrorModule:
         # metadata, breadcrumbs, request_context, contexts, and any nested
         # values that match the canonical denylist. Pure: no caller mutation.
         wire_payload = scrub(event)
+        # The top-level ``sessionId`` is the SDK-controlled release-health /
+        # replay correlation key, not user PII. The canonical denylist scrubs
+        # any nested ``session*`` key (correct for user-supplied metadata), so
+        # restore the SDK's own top-level value after scrubbing — the backend
+        # needs it to attribute errored/crashed sessions. Nested session keys
+        # inside user metadata stay redacted.
+        if isinstance(wire_payload, dict) and isinstance(event, dict) and "sessionId" in event:
+            wire_payload["sessionId"] = event["sessionId"]
         status, body = self._transport.post(_INGEST_PATH, wire_payload)
         if status == 202:
             event_id: Optional[str] = None
