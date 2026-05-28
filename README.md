@@ -93,6 +93,12 @@ The SDK redacts common sensitive headers and fields. Avoid putting secrets in cu
 - Missing request telemetry: register the framework integration during app startup.
 - Short-lived script: call `allstak.get_client().flush()` before exit when a client is initialized.
 
+## Contributing and Support
+
+- Report bugs with the GitHub bug report template: https://github.com/AllStak/allstak-python/issues/new/choose
+- Open pull requests using the checklist in [CONTRIBUTING.md](CONTRIBUTING.md).
+- Report security vulnerabilities privately through [SECURITY.md](SECURITY.md).
+
 ## License
 
 MIT
