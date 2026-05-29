@@ -1,23 +1,33 @@
 # allstak
 
+[![PyPI](https://img.shields.io/pypi/v/allstak.svg)](https://pypi.org/project/allstak/)
+[![Python versions](https://img.shields.io/pypi/pyversions/allstak.svg)](https://pypi.org/project/allstak/)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+[![CI](https://github.com/AllStak/allstak-python/actions/workflows/ci.yml/badge.svg?branch=develop)](https://github.com/AllStak/allstak-python/actions/workflows/ci.yml)
+
 AllStak SDK for Python, Django, Flask, FastAPI, and plain services. Captures exceptions, logs, inbound and outbound HTTP requests, spans, database telemetry, and cron heartbeats.
 
 ## Install
 
-> **Not yet on PyPI.** `pip install allstak` is reserved but does not
-> resolve a published artifact yet. Until first publish lands (tracked
-> in [`docs/devops/sdk-python-dotnet-first-publish.md`](https://github.com/AllStak/allstak/blob/dev/docs/devops/sdk-python-dotnet-first-publish.md)
-> in the platform monorepo), install directly from source:
->
-> ```bash
-> pip install "git+https://github.com/AllStak/allstak-python.git@develop"
-> ```
->
-> Once `0.1.x` ships on PyPI, the canonical install becomes:
->
-> ```bash
-> pip install allstak
-> ```
+```bash
+pip install allstak
+```
+
+Framework extras are opt-in so the base install stays minimal:
+
+```bash
+pip install "allstak[fastapi]"     # FastAPI/Starlette helpers
+pip install "allstak[flask]"       # Flask helpers
+pip install "allstak[django]"      # Django middleware + integrations
+pip install "allstak[sqlalchemy]"  # SQLAlchemy query telemetry
+pip install "allstak[all]"         # everything above
+```
+
+Requires Python 3.9+. Wheels are universal (`py3-none-any`). Every release is
+built reproducibly under a pinned `SOURCE_DATE_EPOCH`, validated via
+`twine check --strict`, smoke-installed on Python 3.10/3.11/3.12, and
+uploaded via PyPI Trusted Publishers (OIDC) with PEP 740 Sigstore
+attestations.
 
 ## Setup
 

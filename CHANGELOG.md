@@ -3,6 +3,18 @@
 All notable changes to the AllStak Python SDK.
 This project follows [Semantic Versioning](https://semver.org/).
 
+## 0.1.3 — 2026-05-29
+
+### Changed
+- **README** refreshed for the post-first-PyPI-publish reality: dropped the
+  "Not yet on PyPI" notice; added PyPI / Python-versions / License / CI
+  badges; documented the optional framework extras (`[fastapi]`,
+  `[flask]`, `[django]`, `[sqlalchemy]`, `[all]`); called out the
+  reproducible build + OIDC publish + Sigstore attestation pipeline.
+
+No code changes — same wheel surface as 0.1.2. This release exists so the
+PyPI long description reflects the post-publish reality.
+
 ## 0.1.2 — 2026-05-18
 
 ### Fixed
