@@ -53,7 +53,7 @@ Homepage = "https://allstak.sa"
 Documentation = "https://allstak.sa/docs/sdks/python"
 Repository = "https://github.com/AllStak/allstak-python"
 Issues = "https://github.com/AllStak/allstak-python/issues"
-Changelog = "https://github.com/AllStak/allstak-python/blob/main/CHANGELOG.md"
+Changelog = "https://github.com/AllStak/allstak-python/blob/develop/CHANGELOG.md"
 
 [project.optional-dependencies]
 dev = [

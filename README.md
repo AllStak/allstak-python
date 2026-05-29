@@ -10,7 +10,7 @@ AllStak SDK for Python, Django, Flask, FastAPI, and plain services. Captures exc
 > in the platform monorepo), install directly from source:
 >
 > ```bash
-> pip install "git+https://github.com/AllStak/allstak-python.git@main"
+> pip install "git+https://github.com/AllStak/allstak-python.git@develop"
 > ```
 >
 > Once `0.1.x` ships on PyPI, the canonical install becomes:

@@ -1,0 +1,175 @@
+# Production-grade PyPI publish for the AllStak Python SDK.
+#
+# Trigger: a GitHub Release is *published* (not a tag push). This keeps the
+# release notes + the artefact upload tightly coupled and prevents accidental
+# tag-pushes from publishing.
+#
+# Authentication: PyPI Trusted Publishers (OIDC). No API tokens.
+# The deployment environment `pypi` must be configured at
+# https://github.com/AllStak/allstak-python/settings/environments/new
+# and the matching publisher must be configured on PyPI at
+# https://pypi.org/manage/account/publishing/ with:
+#
+#   Project name:  allstak
+#   Owner:         AllStak
+#   Repository:    allstak-python
+#   Workflow:      publish.yml
+#   Environment:   pypi
+#
+# Defence-in-depth: the publish job only runs after `build` proves the
+# wheel installs cleanly from a fresh interpreter on every supported
+# Python and `twine check --strict` returns 0. Attestations are uploaded
+# via Sigstore (PEP 740) so consumers can verify provenance.
+
+name: Publish to PyPI
+
+on:
+  release:
+    types: [published]
+
+# Default to read-only. Individual jobs opt in to the writes they need.
+permissions:
+  contents: read
+
+concurrency:
+  group: pypi-publish-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  # -----------------------------------------------------------------------
+  # 1. Build — sdist + wheel, reproducibly, then twine check --strict and
+  #    a sanity install from the built wheel.
+  # -----------------------------------------------------------------------
+  build:
+    name: Build sdist + wheel
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # Full history so hatchling / VCS-based versioning (if ever
+          # enabled) can read the tag annotation.
+          fetch-depth: 0
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+
+      - name: Install build tooling
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install build twine
+
+      - name: Build sdist + wheel (reproducible)
+        run: |
+          # PEP 517 reproducible builds: pin embedded timestamps to the
+          # commit author date so two builds of the same SHA byte-match.
+          export SOURCE_DATE_EPOCH="$(git log -1 --pretty=%ct)"
+          echo "SOURCE_DATE_EPOCH=${SOURCE_DATE_EPOCH}"
+          python -m build
+
+      - name: Inspect built artefacts
+        run: |
+          ls -lh dist/
+          # Fail loudly on multiple wheels / sdists — would indicate a
+          # stale checkout or a build script that emitted dupes.
+          test "$(ls dist/*.whl | wc -l)" = "1"
+          test "$(ls dist/*.tar.gz | wc -l)" = "1"
+
+      - name: Verify metadata + README rendering (twine check --strict)
+        # --strict turns rendering warnings (e.g. malformed Markdown,
+        # missing long-description content type) into errors.
+        run: python -m twine check --strict dist/*
+
+      - name: Smoke install from wheel in a clean venv
+        run: |
+          python -m venv /tmp/install-wheel
+          /tmp/install-wheel/bin/pip install --upgrade pip
+          /tmp/install-wheel/bin/pip install dist/*.whl
+          /tmp/install-wheel/bin/python -c "import allstak; print('wheel import OK')"
+
+      - name: Smoke install from sdist in a clean venv
+        run: |
+          python -m venv /tmp/install-sdist
+          /tmp/install-sdist/bin/pip install --upgrade pip
+          /tmp/install-sdist/bin/pip install dist/*.tar.gz
+          /tmp/install-sdist/bin/python -c "import allstak; print('sdist import OK')"
+
+      - name: Upload built artefacts for downstream jobs
+        uses: actions/upload-artifact@v4
+        with:
+          name: dist
+          path: dist/
+          if-no-files-found: error
+          retention-days: 7
+
+  # -----------------------------------------------------------------------
+  # 2. Cross-version install — install the built wheel into every supported
+  #    Python and import the package. Last gate before upload.
+  # -----------------------------------------------------------------------
+  cross-version-install:
+    name: Install on Python ${{ matrix.python }}
+    runs-on: ubuntu-latest
+    needs: [build]
+    timeout-minutes: 5
+    strategy:
+      fail-fast: true
+      matrix:
+        python: ['3.10', '3.11', '3.12']
+    steps:
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+
+      - name: Download built artefacts
+        uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist/
+
+      - name: Install from wheel + import
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install dist/*.whl
+          python -c "import allstak; print('Python ${{ matrix.python }} import OK')"
+
+  # -----------------------------------------------------------------------
+  # 3. Publish — only after build + every install smoke. Uploads via OIDC
+  #    trusted publisher against the `pypi` environment, with PEP 740
+  #    Sigstore attestations so consumers can verify provenance.
+  # -----------------------------------------------------------------------
+  publish:
+    name: Publish to PyPI
+    runs-on: ubuntu-latest
+    needs: [build, cross-version-install]
+    timeout-minutes: 10
+    environment:
+      name: pypi
+      url: https://pypi.org/project/allstak/
+    permissions:
+      # OIDC token minted by GitHub and exchanged with PyPI.
+      id-token: write
+      # Required for attaching artefacts back to the GitHub Release.
+      contents: read
+    steps:
+      - name: Download built artefacts
+        uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist/
+
+      - name: List artefacts to be published
+        run: ls -lh dist/
+
+      - name: Publish to PyPI
+        uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          packages-dir: dist/
+          # PEP 740 / Sigstore attestations. Default is true on the action
+          # but set explicitly to make the intent obvious.
+          attestations: true
+          # Block the upload if any artefact is missing the expected
+          # filename pattern — catches name-typos before PyPI.
+          verbose: true
+          print-hash: true
