@@ -9,3 +9,6 @@ build/
 venv/
 .env
 *.pyc
+.coverage
+htmlcov/
+*.tgz
