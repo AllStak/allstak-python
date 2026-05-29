@@ -21,6 +21,7 @@ from typing import Any, Dict, List, Optional
 from ..buffer import FlushBuffer
 from ..config import AllStakConfig
 from ..models.replay import ReplayEvent, ReplayPayload
+from ..sanitize import scrub, scrub_values
 from ..transport import AllStakAuthError, AllStakTransportError, HttpTransport
 
 logger = logging.getLogger("allstak.sdk")
@@ -172,6 +173,7 @@ class ReplayModule:
 
     def _flush_batch(self, items: List[tuple]) -> None:
         """Group items by fingerprint and send one payload per session."""
+        send_pii = getattr(self._config, "send_default_pii", False)
         # Group by (fingerprint, session_id)
         sessions: Dict[tuple, List[ReplayEvent]] = {}
         for fingerprint, session_id, event in items:
@@ -185,9 +187,11 @@ class ReplayModule:
                     session_id=session_id,
                     events=events,
                 )
-                status, body = self._transport.post(
-                    _INGEST_PATH, payload.to_dict()
-                )
+                # Sanitize before transport: key-name redaction then value PII
+                # scrubbing over the serialized eventData blobs. fingerprint /
+                # sessionId / url are skip-keyed and ship verbatim.
+                wire = scrub_values(scrub(payload.to_dict()), send_default_pii=send_pii)
+                status, body = self._transport.post(_INGEST_PATH, wire)
                 if status != 202:
                     logger.debug(
                         "[AllStak] Replay ingestion returned %d: %s", status, body

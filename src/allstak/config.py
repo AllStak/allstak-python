@@ -216,6 +216,28 @@ class AllStakConfig:
     """When True, install ``threading.excepthook`` to capture uncaught
     exceptions raised inside background threads (Python 3.8+)."""
 
+    # --- Privacy / data scrubbing ---
+    send_default_pii: bool = False
+    """Sentry-parity PII toggle. Default ``False`` (privacy-preserving).
+
+    Layer-1 key-name redaction (password/token/cookie/...) and the ALWAYS-ON
+    value scrubbers (credit-card numbers validated by Luhn, US SSNs) run
+    regardless of this flag — high-risk financial/identity data is never
+    shipped in telemetry.
+
+    When ``False`` (default): e-mail addresses and IPv4 addresses found in
+    free-text string values (error/log messages, metadata/extra/contexts
+    values, breadcrumb message+data, captured HTTP/DB fields) are replaced with
+    ``[REDACTED]``, and any auto-collected client IP the SDK attaches is
+    dropped/masked.
+
+    When ``True``: the operator has opted into PII, so the e-mail / IPv4 value
+    scrubbers are disabled and auto-collected client IP is allowed.
+
+    Note: ``send_default_pii`` does NOT strip data on the explicitly-set user
+    object (``set_user(id=..., email=..., ip=...)``) — that identification is
+    intentional and ships as before, matching Sentry."""
+
     # --- Event processing & sampling ---
     before_send: Optional[Callable[[Dict[str, Any]], Optional[Dict[str, Any]]]] = None
     """Optional hook called once just before an error/message event is handed

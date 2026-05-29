@@ -11,7 +11,7 @@ from typing import Any, Dict, List, Optional
 from ..config import AllStakConfig
 from ..models.breadcrumb import Breadcrumb
 from ..models.errors import ErrorPayload, RequestContext, UserContext
-from ..sanitize import scrub
+from ..sanitize import scrub, scrub_values
 from ..transport import AllStakAuthError, AllStakTransportError, HttpTransport
 
 logger = logging.getLogger("allstak.sdk")
@@ -222,6 +222,15 @@ class ErrorModule:
         # metadata, breadcrumbs, request_context, contexts, and any nested
         # values that match the canonical denylist. Pure: no caller mutation.
         wire_payload = scrub(event)
+        # 3b. Value-pattern PII scrubbing (CC/SSN always; email/IPv4 unless
+        # send_default_pii). Protected keys (explicit user object, stack-frame
+        # paths, release/sdk identity, URLs, session/trace ids) are skipped by
+        # the scrubber so legitimate data is not corrupted. Fail-open inside
+        # scrub_values — never breaks an event.
+        wire_payload = scrub_values(
+            wire_payload,
+            send_default_pii=getattr(self._config, "send_default_pii", False),
+        )
         # The top-level ``sessionId`` is the SDK-controlled release-health /
         # replay correlation key, not user PII. The canonical denylist scrubs
         # any nested ``session*`` key (correct for user-supplied metadata), so

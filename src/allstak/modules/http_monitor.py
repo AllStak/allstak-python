@@ -13,6 +13,7 @@ from urllib.parse import urlparse
 from ..buffer import FlushBuffer
 from ..config import AllStakConfig
 from ..models.http_requests import MAX_BATCH_SIZE, HttpRequestBatch, HttpRequestItem
+from ..sanitize import scrub, scrub_values
 from ..transport import AllStakAuthError, AllStakTransportError, HttpTransport
 
 logger = logging.getLogger("allstak.sdk")
@@ -227,14 +228,16 @@ class HttpMonitorModule:
 
     def _flush_batch(self, items: List[HttpRequestItem]) -> None:
         """Send items in batches of up to MAX_BATCH_SIZE."""
+        send_pii = getattr(self._config, "send_default_pii", False)
         # Chunk into batches of 100
         for i in range(0, len(items), MAX_BATCH_SIZE):
             chunk = items[i : i + MAX_BATCH_SIZE]
             try:
                 batch = HttpRequestBatch(requests=chunk)
-                status, body = self._transport.post(
-                    _INGEST_PATH, batch.to_dict()
-                )
+                # Sanitize before transport: key-name redaction then value
+                # PII scrubbing. host/path/trace/span/user ids are skip-keyed.
+                wire = scrub_values(scrub(batch.to_dict()), send_default_pii=send_pii)
+                status, body = self._transport.post(_INGEST_PATH, wire)
                 if status != 202:
                     logger.debug(
                         "[AllStak] HTTP requests batch returned %d: %s", status, body

@@ -8,6 +8,7 @@ from typing import Any, Callable, Dict, List, Optional
 from ..buffer import FlushBuffer
 from ..config import AllStakConfig
 from ..models.logs import LOG_LEVELS, LogPayload
+from ..sanitize import scrub, scrub_values
 from ..transport import AllStakAuthError, AllStakTransportError, HttpTransport
 
 logger = logging.getLogger("allstak.sdk")
@@ -147,9 +148,13 @@ class LogModule:
 
     def _flush_batch(self, items: List[LogPayload]) -> None:
         """Called by FlushBuffer — send each log as an individual request."""
+        send_pii = getattr(self._config, "send_default_pii", False)
         for payload in items:
             try:
-                status, body = self._transport.post(_INGEST_PATH, payload.to_dict())
+                # Sanitize before transport: key-name redaction (layer 1) then
+                # value-pattern PII scrubbing (layer 2) over message + metadata.
+                wire = scrub_values(scrub(payload.to_dict()), send_default_pii=send_pii)
+                status, body = self._transport.post(_INGEST_PATH, wire)
                 if status != 202:
                     logger.debug(
                         "[AllStak] Log ingestion returned %d: %s", status, body

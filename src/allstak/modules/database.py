@@ -11,6 +11,7 @@ from typing import Any, Dict, List, Optional
 
 from ..buffer import FlushBuffer
 from ..config import AllStakConfig
+from ..sanitize import scrub, scrub_values
 from ..transport import AllStakAuthError, AllStakTransportError, HttpTransport
 
 logger = logging.getLogger("allstak.sdk")
@@ -141,12 +142,15 @@ class DatabaseModule:
 
     def _flush_batch(self, items: List[Dict[str, Any]]) -> None:
         """Send items in batches of up to _BATCH_SIZE."""
+        send_pii = getattr(self._config, "send_default_pii", False)
         for i in range(0, len(items), _BATCH_SIZE):
             chunk = items[i : i + _BATCH_SIZE]
             try:
-                status, body = self._transport.post(
-                    _INGEST_PATH, {"queries": chunk}
-                )
+                # Sanitize before transport: key-name redaction then value PII
+                # scrubbing (covers errorMessage free text). queryHash/trace/span
+                # ids are skip-keyed; normalizedQuery is already literal-stripped.
+                wire = scrub_values(scrub({"queries": chunk}), send_default_pii=send_pii)
+                status, body = self._transport.post(_INGEST_PATH, wire)
                 if status != 202:
                     logger.debug(
                         "[AllStak] DB queries batch returned %d: %s", status, body
