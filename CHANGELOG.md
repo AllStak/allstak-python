@@ -3,6 +3,55 @@
 All notable changes to the AllStak Python SDK.
 This project follows [Semantic Versioning](https://semver.org/).
 
+## 0.1.4 — 2026-05-29
+
+### Added
+- **Deepened Django integration** (`AllStakMiddleware`). Request spans/transactions
+  are now named by the resolved route *template* (e.g. `/users/<int:pk>/`) instead
+  of the concrete path, keeping transaction cardinality low. Unhandled view
+  exceptions are captured via the `got_request_exception` signal (mechanism
+  `handled=False`) and re-raised so Django still renders its own 500. Full
+  **async view support** — the middleware detects async `get_response` and drives
+  the async path, including async exception capture. Authenticated
+  `request.user` identity (id + email) flows to `set_user`; anonymous and
+  missing-user requests are left untouched. `4xx` outcomes (`Http404`,
+  `PermissionDenied`, `SuspiciousOperation`) are recorded as non-error spans and
+  are **not** reported as errors. Inbound `traceparent` / `x-allstak-trace-id`
+  headers are honored and trace headers are stamped on the response.
+
+- **Deepened FastAPI / Starlette ASGI integration** (`AllStakFastAPI` /
+  `AllStakASGIMiddleware`). Spans/transactions are named by the route *template*
+  (e.g. `/items/{item_id}`) with an optional endpoint-name style. Status-code
+  driven capture: `5xx` (raised exceptions and `HTTPException(5xx)`) are reported
+  while `4xx` are ignored by default, with a configurable
+  `failed_request_status_codes` set. Unhandled errors in **both sync and async**
+  handlers are captured and re-raised. Streaming responses keep the span open
+  until the final body chunk. User context is read from `request.state.user`
+  (dict or object). `OPTIONS` / `HEAD` are excluded from transactions by default.
+  Inbound trace ids are honored and trace headers added to responses.
+
+- **Fail-open guarantee for both integrations.** Any failure inside the
+  observability path (`capture_exception`, `capture_error`, `start_span`,
+  `http.record`, `set_user`) is swallowed and never breaks the host request —
+  a raising telemetry path still lets the real response (200 or framework 500)
+  reach the client.
+
+- Standalone, network-free test suites for both integrations
+  (`tests/test_django_integration.py`, `tests/test_fastapi_integration.py`)
+  driving real framework request stacks and asserting against the public client
+  surface.
+
+### Fixed
+- **Cross-test interference from global instrumentation leaking between suites.**
+  `Client.init()` (default `auto_breadcrumbs=True`) monkeypatches
+  `requests.Session.send` and attaches a root logging handler — process-global
+  side effects that suites resetting only `_client` / `_initialized_once` left
+  in place. This was masked by alphabetical test ordering; under other orders the
+  `requests` breadcrumb idempotency test saw an already-patched `Session.send`
+  and failed. Added an autouse `conftest.py` fixture that snapshots and restores
+  `requests.Session.send` and the root logger handlers around every test, so
+  the instrumentation can no longer leak across suites regardless of order.
+
 ## 0.1.3 — 2026-05-29
 
 ### Changed

@@ -8,20 +8,20 @@ Two layers of redaction, applied on the wire path:
    Conforms to the canonical AllStak SDK denylist defined in
    ``docs/standards/sdk-platform-standards.md``.
 
-2. **Value-pattern redaction** (``scrub_values``) — Sentry-parity scrubbing of
+2. **Value-pattern redaction** (``scrub_values``) — value-pattern scrubbing of
    PII that leaks into free-text string *values*: credit-card numbers (Luhn
    validated), US SSNs, e-mail addresses and IPv4 addresses. This is
    conservative by design — only Luhn-valid card runs and hyphenated SSNs are
    touched, so order ids / timestamps / bare 9-digit numbers are preserved.
 
-Layering / ``send_default_pii`` (Sentry parity, default ``False``):
+Layering / ``send_default_pii`` (default ``False``):
 
 * **Always** scrubbed regardless of ``send_default_pii`` — high-risk
   financial / identity data never legitimately wanted in telemetry:
   credit-card numbers and US SSNs.
 * Scrubbed **unless** ``send_default_pii is True`` — e-mail addresses and
   IPv4 addresses. When the operator opts into PII these pass through in free
-  text (matching Sentry's ``send_default_pii=True``).
+  text (when ``send_default_pii=True``).
 
 Key-name redaction (layer 1) is *always* applied and is independent of
 ``send_default_pii``.
@@ -95,7 +95,7 @@ DEFAULT_DENYLIST: tuple[str, ...] = (
 #
 # Matching is case-insensitive and exact on the key name. ``user`` short-circuits
 # the whole subtree — an explicitly-set user object (id/email/ip) ships as-is,
-# matching Sentry's behaviour where send_default_pii never strips explicit user
+# where send_default_pii never strips explicit user
 # data.
 VALUE_SCRUB_SKIP_KEYS: frozenset[str] = frozenset({
     "user",            # explicit setUser object — id/email/ip ship as-is

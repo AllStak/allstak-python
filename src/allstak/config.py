@@ -186,7 +186,7 @@ class AllStakConfig:
     """When True (default), telemetry that cannot be delivered (network down,
     retries exhausted, or buffered at shutdown) is written PII-scrubbed to a
     filesystem spool and replayed on the next SDK init — the server analogue of
-    Sentry's offline envelope cache. Only error/log/span/http/db telemetry is
+    an offline envelope cache. Only error/log/span/http/db telemetry is
     persisted; session lifecycle calls are live-only. Always fail-open: if the
     spool directory is unwritable (read-only FS, serverless, sandbox) the SDK
     silently falls back to its in-memory behaviour. Set False to disable."""
@@ -218,7 +218,7 @@ class AllStakConfig:
 
     # --- Privacy / data scrubbing ---
     send_default_pii: bool = False
-    """Sentry-parity PII toggle. Default ``False`` (privacy-preserving).
+    """PII toggle. Default ``False`` (privacy-preserving).
 
     Layer-1 key-name redaction (password/token/cookie/...) and the ALWAYS-ON
     value scrubbers (credit-card numbers validated by Luhn, US SSNs) run
@@ -236,7 +236,7 @@ class AllStakConfig:
 
     Note: ``send_default_pii`` does NOT strip data on the explicitly-set user
     object (``set_user(id=..., email=..., ip=...)``) — that identification is
-    intentional and ships as before, matching Sentry."""
+    intentional and ships as before."""
 
     # --- Event processing & sampling ---
     before_send: Optional[Callable[[Dict[str, Any]], Optional[Dict[str, Any]]]] = None

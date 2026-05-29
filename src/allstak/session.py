@@ -1,5 +1,5 @@
 """
-Release-health session tracking — Sentry-style "one session per process".
+Release-health session tracking — "one session per process".
 
 On SDK init the client opens a single :class:`Session` for the running
 process and POSTs ``/ingest/v1/sessions/start``. Errored / crashed
@@ -38,7 +38,7 @@ _PATH_END = "/ingest/v1/sessions/end"
 
 
 class SessionStatus:
-    """Lifecycle status wire values — match the backend contract / Sentry.
+    """Lifecycle status wire values — match the backend contract.
 
     * ``ok``       — session ended normally with at most non-fatal logs.
     * ``errored``  — at least one *handled* error-level event landed during

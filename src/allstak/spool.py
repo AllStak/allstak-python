@@ -3,7 +3,7 @@ Offline / persistent event spool — survive a process restart *and* a network
 outage by writing un-sent, PII-scrubbed telemetry to a filesystem directory and
 replaying it on the next SDK init.
 
-This is the server-runtime analogue of Sentry's offline envelope cache. It is
+This is the server-runtime analogue of an offline envelope cache. It is
 the idiomatic mechanism for this SDK: the in-memory :class:`~allstak.buffer.
 FlushBuffer` absorbs back-pressure during the process lifetime; the spool
 catches whatever the transport could *not* deliver before the process ended or

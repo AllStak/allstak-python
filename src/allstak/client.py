@@ -123,7 +123,7 @@ class AllStakClient:
         self._tracing = TracingModule(self._transport, config)
         self._database = DatabaseModule(self._transport, config)
 
-        # Release-health: open one session for this process (Sentry-style
+        # Release-health: open one session for this process (standard
         # "one session per process"). Skipped under a unit-test runtime
         # (mirrors the release-registration guard) and when opted out via
         # config.enable_auto_session_tracking. Fully fail-open.
