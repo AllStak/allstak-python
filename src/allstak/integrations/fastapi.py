@@ -22,7 +22,7 @@ Setup::
     import allstak
     from allstak.integrations.fastapi import AllStakFastAPI
 
-    allstak.init(api_key="ask_live_...", host="https://ingest.allstak.dev")
+    allstak.init(api_key="ask_live_...", host="https://api.allstak.sa")
 
     app = FastAPI()
     AllStakFastAPI(app, service="my-api")

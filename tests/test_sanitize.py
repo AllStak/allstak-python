@@ -203,7 +203,7 @@ def test_cc_and_ssn_always_redacted_even_with_send_default_pii_true():
 
 
 def test_explicit_user_object_is_not_value_scrubbed():
-    # setUser email/ip ship as-is (matches Sentry: send_default_pii never
+    # setUser email/ip ship as-is (send_default_pii never
     # strips explicitly-set user data).
     event = {"user": {"id": "u1", "email": "alice@example.com", "ip": "192.168.1.10"}}
     out = scrub_values(event, send_default_pii=False)

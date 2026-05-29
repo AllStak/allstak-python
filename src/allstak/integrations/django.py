@@ -15,7 +15,6 @@ Setup in settings.py::
 
     ALLSTAK = {
         "api_key": "ask_live_...",
-        "host": "http://localhost:8080",
         "environment": "production",
         # Optional integration knobs (all have safe defaults):
         # "transaction_style": "route",   # "route" (default) or "url"

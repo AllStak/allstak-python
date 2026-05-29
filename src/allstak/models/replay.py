@@ -67,7 +67,7 @@ class ReplayPayload:
     """
 
     fingerprint: str
-    """Stable session fingerprint — used as Kafka partition key.
+    """Stable session fingerprint for grouping replay events.
     Must remain the same across all batches for one session."""
 
     session_id: str

@@ -1,6 +1,6 @@
 """Tests for release-health session tracking (start/end + crash-free status).
 
-Covers the Sentry-style "one session per process" lifecycle implemented in
+Covers the "one session per process" lifecycle implemented in
 ``allstak.session`` and its wiring into ``AllStakClient``:
 
 * start payload shape + that sessions are never sampled,

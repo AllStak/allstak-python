@@ -84,8 +84,8 @@ PyPI long description reflects the post-publish reality.
   before transport. Live canary `should_not_leak_python` planted in
   `password` / `authorization` / `cookie` / `Bearer` / `credit_card` / `ssn` /
   nested-token fields — verified `leak_pos = 0` across `metadata`,
-  `stack_trace`, `breadcrumbs`, and `message` in production ClickHouse
-  (event `f55a4839-357c-4aaa-a353-f4df4d6ff542`).
+  `stack_trace`, `breadcrumbs`, and `message` on the wire,
+  verified before transport.
 - `tests/test_sanitize.py` — denylist, recursion, cycle, mutation tests.
 
 ## 0.2.0 — 2026-04-11

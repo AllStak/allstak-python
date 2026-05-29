@@ -5,7 +5,7 @@ Usage::
 
     import allstak
 
-    allstak.init(api_key="ask_live_...", host="http://localhost:8080")
+    allstak.init(api_key="ask_live_...")
 
     # Capture an exception
     try:
