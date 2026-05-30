@@ -1,5 +1,7 @@
 """Unit tests for the HTTP transport layer (mocked network)."""
 
+import gzip
+import json
 from datetime import datetime, timedelta, timezone
 
 import pytest
@@ -36,6 +38,10 @@ class TestTransportHeaders:
         req = route.calls[0].request
         assert req.headers["x-allstak-key"] == KEY
         assert req.headers["content-type"] == "application/json"
+        stats = t.stats()
+        assert stats["eventsCaptured"] == 1
+        assert stats["eventsSent"] == 1
+        assert stats["eventsFailed"] == 0
 
     @respx.mock
     def test_returns_status_and_body(self):
@@ -46,6 +52,42 @@ class TestTransportHeaders:
         status, body = t.post("/ingest/v1/logs", {"level": "info", "message": "hi"})
         assert status == 202
         assert body["data"]["id"] == "x"
+
+
+class TestTransportCompression:
+    @respx.mock
+    def test_tiny_payload_is_not_compressed(self):
+        route = respx.post(f"{BASE}/ingest/v1/logs").mock(
+            return_value=httpx.Response(202, json={"success": True})
+        )
+        t = make_transport()
+        t.post("/ingest/v1/logs", {"level": "info", "message": "hi"})
+
+        req = route.calls[0].request
+        assert "content-encoding" not in req.headers
+        assert json.loads(req.content.decode("utf-8"))["message"] == "hi"
+        stats = t.stats()
+        assert stats["uncompressedPayloads"] == 1
+        assert stats["compressedPayloads"] == 0
+        assert stats["compressionBytesSaved"] == 0
+
+    @respx.mock
+    def test_large_payload_is_gzipped_when_smaller(self):
+        route = respx.post(f"{BASE}/ingest/v1/errors").mock(
+            return_value=httpx.Response(202, json={"success": True})
+        )
+        t = make_transport()
+        message = "x" * 8000
+        t.post("/ingest/v1/errors", {"exceptionClass": "E", "message": message})
+
+        req = route.calls[0].request
+        assert req.headers["content-encoding"] == "gzip"
+        decoded = json.loads(gzip.decompress(req.content).decode("utf-8"))
+        assert decoded["message"] == message
+        stats = t.stats()
+        assert stats["compressedPayloads"] == 1
+        assert stats["uncompressedPayloads"] == 0
+        assert stats["compressionBytesSaved"] > 0
 
 
 class TestTransport401:
@@ -92,6 +134,11 @@ class TestTransportRetry:
             with pytest.raises(AllStakTransportError):
                 t.post("/ingest/v1/errors", {})
         assert route.call_count == 3
+        stats = t.stats()
+        assert stats["eventsCaptured"] == 1
+        assert stats["eventsFailed"] == 1
+        assert stats["eventsDropped"] == 1
+        assert stats["retryAttempts"] == 2
 
     @respx.mock
     def test_422_not_retried(self):
@@ -104,6 +151,9 @@ class TestTransportRetry:
             status, _ = t.post("/ingest/v1/errors", {})
         assert status == 422
         assert route.call_count == 1
+        stats = t.stats()
+        assert stats["eventsFailed"] == 1
+        assert stats["eventsDropped"] == 1
 
     @respx.mock
     def test_400_not_retried(self):
@@ -146,6 +196,9 @@ class TestTransportRetry:
             status, body = t.post("/ingest/v1/errors", {})
         assert status == 202
         assert call_count == 2
+        stats = t.stats()
+        assert stats["eventsSent"] == 1
+        assert stats["retryAttempts"] == 1
 
 
 class TestParseRetryAfter:
@@ -205,6 +258,10 @@ class TestTransport429:
         assert route.call_count == 3
         # Honored the Retry-After header value (1s, no jitter).
         sleep_mock.assert_called_with(1.0)
+        stats = t.stats()
+        assert stats["rateLimitedCount"] == 3
+        assert stats["retryAttempts"] == 2
+        assert stats["eventsFailed"] == 1
 
     @respx.mock
     def test_429_recovers_on_retry(self):
@@ -225,6 +282,9 @@ class TestTransport429:
         assert status == 202
         assert call_count == 2
         sleep_mock.assert_called_with(2.0)
+        stats = t.stats()
+        assert stats["rateLimitedCount"] == 1
+        assert stats["eventsSent"] == 1
 
     @respx.mock
     def test_429_without_retry_after_falls_back_to_backoff(self):

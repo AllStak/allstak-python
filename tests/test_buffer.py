@@ -34,6 +34,7 @@ class TestRingBuffer:
         buf.push("d")  # "a" should be evicted
         items = buf.drain()
         assert items == ["b", "c", "d"]
+        assert buf.dropped_count == 1
 
     def test_is_nearly_full(self):
         buf = RingBuffer(maxsize=10)

@@ -91,6 +91,7 @@ __all__ = [
     "set_user",
     "clear_user",
     "flush",
+    "get_diagnostics",
     "log",
     "http",
     "replay",
@@ -224,6 +225,14 @@ def flush() -> None:
     client = get_client()
     if client:
         client.flush()
+
+
+def get_diagnostics() -> Dict[str, Any]:
+    """Return privacy-safe SDK diagnostic counters, or an empty snapshot before init."""
+    client = get_client()
+    if client:
+        return client.get_diagnostics()
+    return {}
 
 
 def shutdown() -> None:

@@ -14,6 +14,8 @@ Contract from SDK guidelines:
 
 from __future__ import annotations
 
+import gzip
+import json
 import logging
 import random
 import sys
@@ -42,6 +44,9 @@ _MAX_RETRY_AFTER = 300.0
 
 # Backoff delays (seconds) for attempts 2-5
 _BACKOFF_DELAYS = [1.0, 2.0, 4.0, 8.0]
+
+# Compress only payloads large enough for gzip to pay for itself.
+_COMPRESSION_THRESHOLD_BYTES = 1024
 
 
 def parse_retry_after(header_value: Optional[str], now: Optional[datetime] = None) -> float:
@@ -138,6 +143,20 @@ class HttpTransport:
         # being replayed so a transient failure during drain does not duplicate.
         self._spool = spool
         self._draining = threading.local()
+        self._stats_lock = threading.Lock()
+        self._stats: Dict[str, int] = {
+            "eventsCaptured": 0,
+            "eventsSent": 0,
+            "eventsFailed": 0,
+            "eventsDropped": 0,
+            "eventsPersisted": 0,
+            "eventsReplayed": 0,
+            "retryAttempts": 0,
+            "rateLimitedCount": 0,
+            "compressedPayloads": 0,
+            "uncompressedPayloads": 0,
+            "compressionBytesSaved": 0,
+        }
 
     def set_spool(self, spool: Optional[Any]) -> None:
         """Attach (or detach) the offline spool after construction."""
@@ -159,7 +178,13 @@ class HttpTransport:
         Raises ``AllStakAuthError`` on 401 (caller should disable SDK).
         Raises ``AllStakTransportError`` when all retries are exhausted.
         """
+        is_drain = bool(getattr(self._draining, "active", False))
+        if not is_drain:
+            self._increment_stat("eventsCaptured")
+
         if self._disabled:
+            if not is_drain:
+                self._increment_stat("eventsDropped")
             raise AllStakAuthError("SDK is disabled due to invalid API key")
 
         url = f"{self._host}{path}"
@@ -167,6 +192,13 @@ class HttpTransport:
             "Content-Type": "application/json",
             "X-AllStak-Key": self._api_key,
         }
+        body, compressed, bytes_saved = self._prepare_body(payload)
+        if compressed:
+            headers["Content-Encoding"] = "gzip"
+            self._increment_stat("compressedPayloads")
+            self._increment_stat("compressionBytesSaved", bytes_saved)
+        else:
+            self._increment_stat("uncompressedPayloads")
 
         last_exc: Optional[Exception] = None
         last_status: int = 0
@@ -186,23 +218,26 @@ class HttpTransport:
                     )
 
                 with httpx.Client(timeout=self._timeout) as client:
-                    resp = client.post(url, json=payload, headers=headers)
+                    resp = client.post(url, content=body, headers=headers)
 
                 last_status = resp.status_code
-                body: Dict[str, Any] = {}
+                response_body: Dict[str, Any] = {}
                 try:
-                    body = resp.json()
+                    response_body = resp.json()
                 except Exception:
-                    body = {"raw": resp.text}
+                    response_body = {"raw": resp.text}
 
                 if self._debug:
                     logger.debug(
-                        "[AllStak] Response %d: %s", last_status, body
+                        "[AllStak] Response %d: %s", last_status, response_body
                     )
 
                 # 401 → disable SDK immediately, no retry
                 if last_status == 401:
                     self._disabled = True
+                    self._increment_stat("eventsFailed")
+                    if not is_drain:
+                        self._increment_stat("eventsDropped")
                     logger.warning(
                         "[AllStak] SDK disabled: invalid API key (401). "
                         "Check your X-AllStak-Key configuration."
@@ -213,18 +248,25 @@ class HttpTransport:
 
                 # 4xx client errors → no retry (except 401 handled above)
                 if last_status in _NO_RETRY_STATUSES:
+                    self._increment_stat("eventsFailed")
+                    self._increment_stat("eventsDropped")
                     logger.debug(
-                        "[AllStak] Non-retryable error %d: %s", last_status, body
+                        "[AllStak] Non-retryable error %d: %s", last_status, response_body
                     )
-                    return last_status, body
+                    return last_status, response_body
 
                 # 2xx / 3xx → success
                 if last_status < 400:
-                    return last_status, body
+                    self._increment_stat("eventsSent")
+                    if is_drain:
+                        self._increment_stat("eventsReplayed")
+                    return last_status, response_body
 
                 # 429 (rate limited) / 503 → retryable with backpressure.
                 # Honor Retry-After if present; otherwise fall back to backoff.
                 if last_status in _RETRY_AFTER_STATUSES:
+                    if last_status == 429:
+                        self._increment_stat("rateLimitedCount")
                     retry_after_delay = parse_retry_after(
                         resp.headers.get("Retry-After")
                     )
@@ -255,6 +297,7 @@ class HttpTransport:
 
             # Back off before next attempt (skip sleep after last attempt)
             if attempt < self._max_retries:
+                self._increment_stat("retryAttempts")
                 if retry_after_delay > 0:
                     # Server told us how long to wait — honor it (already
                     # clamped to <= 300s) without adding jitter.
@@ -277,7 +320,12 @@ class HttpTransport:
         # is skipped while this same payload is being replayed (drain) to avoid
         # duplicating it on a transient re-failure. The spool itself decides
         # which paths are persistable (session lifecycle is excluded).
-        self._maybe_persist(path, payload)
+        self._increment_stat("eventsFailed")
+        persisted = self._maybe_persist(path, payload)
+        if persisted:
+            self._increment_stat("eventsPersisted")
+        elif not is_drain:
+            self._increment_stat("eventsDropped")
 
         msg = (
             f"AllStak SDK: all {self._max_retries} attempts failed for POST {path}. "
@@ -301,18 +349,52 @@ class HttpTransport:
         finally:
             self._draining.active = False
 
-    def _maybe_persist(self, path: str, payload: Dict[str, Any]) -> None:
+    def _maybe_persist(self, path: str, payload: Dict[str, Any]) -> bool:
         """Persist an undeliverable payload to the spool. Never raises."""
         spool = self._spool
         if spool is None:
-            return
+            return False
         if getattr(self._draining, "active", False):
-            return
+            return False
         try:
-            spool.persist(path, payload)
+            return bool(spool.persist(path, payload))
         except Exception as exc:  # pragma: no cover — spool is itself fail-open
             logger.debug("[AllStak] spool persist failed (ignored): %s", exc)
+            return False
+
+    def _prepare_body(self, payload: Dict[str, Any]) -> Tuple[bytes, bool, int]:
+        """Serialize and optionally gzip a request body.
+
+        Compression is fail-open and only used when it both crosses the safe
+        threshold and reduces the body size. The persisted/offline payload stays
+        as structured JSON so replay and sanitization contracts are unchanged.
+        """
+        body = json.dumps(payload, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
+        if len(body) < _COMPRESSION_THRESHOLD_BYTES:
+            return body, False, 0
+        try:
+            compressed = gzip.compress(body)
+        except Exception:
+            return body, False, 0
+        if len(compressed) >= len(body):
+            return body, False, 0
+        return compressed, True, len(body) - len(compressed)
 
     def is_disabled(self) -> bool:
         """Returns True if the transport has been disabled (e.g. on 401)."""
         return self._disabled
+
+    def stats(self) -> Dict[str, Any]:
+        """Privacy-safe transport diagnostics snapshot.
+
+        Contains counters only. It never returns payloads, headers, endpoint
+        bodies, API keys, or exception strings.
+        """
+        with self._stats_lock:
+            snapshot: Dict[str, Any] = dict(self._stats)
+        snapshot["disabled"] = self._disabled
+        return snapshot
+
+    def _increment_stat(self, name: str, amount: int = 1) -> None:
+        with self._stats_lock:
+            self._stats[name] = self._stats.get(name, 0) + amount

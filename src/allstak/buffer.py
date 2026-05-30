@@ -32,6 +32,7 @@ class RingBuffer(Generic[T]):
         self._buf: Deque[T] = deque()
         self._lock = threading.Lock()
         self._overflow_warned = False
+        self._dropped = 0
 
     @property
     def capacity(self) -> int:
@@ -41,6 +42,7 @@ class RingBuffer(Generic[T]):
         with self._lock:
             if len(self._buf) >= self._maxsize:
                 self._buf.popleft()  # drop oldest
+                self._dropped += 1
                 if not self._overflow_warned:
                     logger.warning(
                         "[AllStak] Buffer is full (%d items); oldest events are being dropped. "
@@ -67,6 +69,12 @@ class RingBuffer(Generic[T]):
     def __len__(self) -> int:
         with self._lock:
             return len(self._buf)
+
+    @property
+    def dropped_count(self) -> int:
+        """Number of items evicted because the ring buffer was full."""
+        with self._lock:
+            return self._dropped
 
     def is_nearly_full(self, threshold: float = 0.8) -> bool:
         with self._lock:
@@ -149,3 +157,7 @@ class FlushBuffer(Generic[T]):
 
     def __len__(self) -> int:
         return len(self._buffer)
+
+    @property
+    def dropped_count(self) -> int:
+        return self._buffer.dropped_count

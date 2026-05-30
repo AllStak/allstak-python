@@ -65,6 +65,11 @@ class ErrorModule:
         with self._breadcrumb_lock:
             self._breadcrumbs.clear()
 
+    def breadcrumb_count(self) -> int:
+        """Number of breadcrumbs currently buffered for the next error."""
+        with self._breadcrumb_lock:
+            return len(self._breadcrumbs)
+
     def _drain_breadcrumbs(self) -> Optional[List[Dict[str, Any]]]:
         """Drain breadcrumbs and return them as a list of dicts, or None if empty."""
         with self._breadcrumb_lock:

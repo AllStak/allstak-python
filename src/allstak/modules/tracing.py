@@ -245,6 +245,14 @@ class TracingModule:
         stack = self._span_stack.get()
         return stack[-1] if stack else None
 
+    def active_span_count(self) -> int:
+        """Number of active spans in the current context."""
+        return len(self._span_stack.get())
+
+    def has_active_trace(self) -> bool:
+        """Whether the current context has a trace id."""
+        return self._current_trace_id.get() is not None
+
     def start_span(
         self,
         operation: str,

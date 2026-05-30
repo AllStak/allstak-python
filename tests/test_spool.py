@@ -292,6 +292,9 @@ class TestTransportPersistOnFailure:
         with pytest.raises(AllStakTransportError):
             t.post("/ingest/v1/logs", {"message": "buffered at outage"})
         assert spool.count() == 1
+        stats = t.stats()
+        assert stats["eventsPersisted"] == 1
+        assert stats["eventsDropped"] == 0
 
     @respx.mock
     def test_network_error_persists_scrubbed_payload(self, tmp_path, monkeypatch):
@@ -322,6 +325,9 @@ class TestTransportPersistOnFailure:
         with pytest.raises(AllStakTransportError):
             t.post("/ingest/v1/sessions/end", {"sessionId": "abc", "durationMs": 10})
         assert spool.count() == 0  # session calls are live-only
+        stats = t.stats()
+        assert stats["eventsPersisted"] == 0
+        assert stats["eventsDropped"] == 1
 
     @respx.mock
     def test_permanent_4xx_not_persisted(self, tmp_path):
@@ -354,6 +360,9 @@ class TestTransportPersistOnFailure:
         # a duplicate via the persist-on-failure hook.
         spool.drain(t.send_for_drain)
         assert spool.count() == 1
+        stats = t.stats()
+        assert stats["eventsPersisted"] == 0
+        assert stats["eventsDropped"] == 0
 
 
 # ---------------------------------------------------------------------------

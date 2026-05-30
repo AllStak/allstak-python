@@ -509,6 +509,41 @@ class AllStakClient:
         """Clear all breadcrumbs from the buffer."""
         self._errors.clear_breadcrumbs()
 
+    def get_diagnostics(self) -> Dict[str, Any]:
+        """Return a privacy-safe SDK diagnostics snapshot.
+
+        The snapshot intentionally contains counters and queue sizes only. It
+        never includes event payloads, breadcrumbs, headers, API keys, user
+        fields, request bodies, or exception messages.
+        """
+        transport = self._transport.stats()
+        buffer_dropped = self._buffer_dropped_count()
+        queue_size = self._spool_count()
+        events_dropped = int(transport.get("eventsDropped", 0)) + buffer_dropped
+        return {
+            "sdkName": self._config.sdk_name or "allstak-python",
+            "sdkVersion": self._config.sdk_version or "0.2.0",
+            "disabled": bool(self._disabled or transport.get("disabled", False)),
+            "eventsCaptured": int(transport.get("eventsCaptured", 0)),
+            "eventsSent": int(transport.get("eventsSent", 0)),
+            "eventsFailed": int(transport.get("eventsFailed", 0)),
+            "eventsDropped": events_dropped,
+            "eventsPersisted": int(transport.get("eventsPersisted", 0)),
+            "eventsReplayed": int(transport.get("eventsReplayed", 0)),
+            "queueSize": queue_size,
+            "retryAttempts": int(transport.get("retryAttempts", 0)),
+            "rateLimitedCount": int(transport.get("rateLimitedCount", 0)),
+            "compressedPayloads": int(transport.get("compressedPayloads", 0)),
+            "uncompressedPayloads": int(transport.get("uncompressedPayloads", 0)),
+            "compressionBytesSaved": int(transport.get("compressionBytesSaved", 0)),
+            "sanitizerRedactionCount": None,
+            "activeTraceCount": 1 if self._tracing.has_active_trace() else 0,
+            "activeSpanCount": self._tracing.active_span_count(),
+            "breadcrumbCount": self._errors.breadcrumb_count(),
+            "bufferDroppedCount": buffer_dropped,
+            "sessionRecoveryCount": self._session_recovery_count(),
+        }
+
     # ------------------------------------------------------------------
     # User context
     # ------------------------------------------------------------------
@@ -551,6 +586,40 @@ class AllStakClient:
             return session.id if session is not None else None
         except Exception:
             return None
+
+    def _spool_count(self) -> int:
+        spool = getattr(self, "_spool", None)
+        if spool is None:
+            return 0
+        try:
+            return int(spool.count())
+        except Exception:
+            return 0
+
+    def _buffer_dropped_count(self) -> int:
+        total = 0
+        for module in (
+            getattr(self, "_logs", None),
+            getattr(self, "_http", None),
+            getattr(self, "_replay", None),
+            getattr(self, "_tracing", None),
+            getattr(self, "_database", None),
+        ):
+            try:
+                buf = getattr(module, "_flush_buffer", None)
+                total += int(getattr(buf, "dropped_count", 0) or 0)
+            except Exception:
+                pass
+        return total
+
+    def _session_recovery_count(self) -> int:
+        tracker = getattr(self, "_session_tracker", None)
+        if tracker is None:
+            return 0
+        try:
+            return int(getattr(tracker, "recovery_count", 0) or 0)
+        except Exception:
+            return 0
 
     def _record_session_status(
         self, level: str, mechanism: Optional[Dict[str, Any]]
