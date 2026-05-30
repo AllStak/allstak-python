@@ -1,5 +1,6 @@
 """Shared test fixtures and configuration."""
 
+import importlib.util
 import logging
 import os
 import pytest
@@ -7,6 +8,24 @@ import pytest
 # Real backend settings — used only when integration tests are explicitly enabled.
 REAL_API_KEY = os.environ.get("ALLSTAK_API_KEY", "")
 REAL_HOST = os.environ.get("ALLSTAK_HOST", "http://localhost:8080")
+
+# Test modules that import an optional framework at module top level. When the
+# framework is not installed (e.g. an interpreter where the optional extra does
+# not resolve), skip the whole module at collection time instead of erroring out
+# with a ModuleNotFoundError during import. The framework integrations themselves
+# remain optional, so their tests are too.
+_FRAMEWORK_TEST_MODULES = {
+    "test_django_integration.py": "django",
+    "test_django_appconfig.py": "django",
+    "test_fastapi_integration.py": "fastapi",
+    "test_fastapi_autoinstrument.py": "fastapi",
+}
+
+collect_ignore = [
+    test_module
+    for test_module, required_pkg in _FRAMEWORK_TEST_MODULES.items()
+    if importlib.util.find_spec(required_pkg) is None
+]
 
 
 @pytest.fixture(autouse=True)
@@ -32,6 +51,16 @@ def _isolate_global_instrumentation():
         requests = None
         original_send = None
 
+    # ``allstak.init`` also patches Starlette's ASGI entry point (the
+    # FastAPI/Starlette autoinstrument shim). Snapshot it so the global patch
+    # cannot leak across suites regardless of collection order.
+    try:
+        from starlette.applications import Starlette  # type: ignore[import-untyped]
+        original_call = Starlette.__call__
+    except Exception:  # pragma: no cover — starlette present in test env
+        Starlette = None
+        original_call = None
+
     root_logger = logging.getLogger()
     original_handlers = list(root_logger.handlers)
 
@@ -40,7 +69,10 @@ def _isolate_global_instrumentation():
     if requests is not None:
         requests.Session.send = original_send
 
-    # Drop any breadcrumb logging handlers added during the test.
+    if Starlette is not None and original_call is not None:
+        Starlette.__call__ = original_call
+
+    # Drop any breadcrumb / logging-bridge handlers added during the test.
     for handler in list(root_logger.handlers):
         if handler not in original_handlers:
             root_logger.removeHandler(handler)

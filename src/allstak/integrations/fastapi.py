@@ -16,7 +16,18 @@ The request span / transaction is named by the matched **route template**
 (e.g. ``/items/{item_id}``) rather than the concrete path (``/items/42``) so
 high-cardinality URLs collapse to a single low-cardinality name.
 
-Setup::
+Setup (zero-config)::
+
+    import allstak
+    from fastapi import FastAPI
+
+    # init() auto-attaches the ASGI middleware to every FastAPI / Starlette app
+    # (capture_fastapi=True by default), so no AllStakFastAPI(app) line is needed.
+    allstak.init(api_key="ask_live_...")
+
+    app = FastAPI()  # already instrumented
+
+Setup (explicit, still supported)::
 
     from fastapi import FastAPI
     import allstak
@@ -28,7 +39,9 @@ Setup::
     AllStakFastAPI(app, service="my-api")
 
 The integration is a pure ASGI middleware — it works with any Starlette-based
-framework (FastAPI, Starlette, Litestar via Starlette compat, etc.).
+framework (FastAPI, Starlette, Litestar via Starlette compat, etc.). The
+import-time auto-attach (:func:`autoinstrument`, wired from ``init()``) and the
+explicit :class:`AllStakFastAPI` wrapper never double-instrument the same app.
 
 Design notes
 ------------
@@ -65,7 +78,7 @@ import uuid
 from datetime import datetime, timezone
 from typing import Any, Iterable, Optional, Set
 
-from ..propagation import set_asgi_headers
+from ..propagation import normalize_trace_id, parse_traceparent, set_asgi_headers
 
 logger = logging.getLogger("allstak.sdk")
 
@@ -255,8 +268,11 @@ class AllStakASGIMiddleware:
             k.decode("latin-1").lower(): v.decode("latin-1")
             for k, v in scope.get("headers", [])
         }
-        incoming_trace = headers.get("x-allstak-trace-id") or headers.get(
-            "x-request-id"
+        incoming_parent = parse_traceparent(headers.get("traceparent"))
+        incoming_trace = (
+            incoming_parent[0]
+            if incoming_parent
+            else normalize_trace_id(headers.get("x-allstak-trace-id"))
         )
         request_id = (
             headers.get("x-request-id")
@@ -267,9 +283,16 @@ class AllStakASGIMiddleware:
         span = None
         if client is not None:
             try:
-                if incoming_trace:
+                if incoming_parent:
+                    continued = client.continue_trace(
+                        incoming_parent[0],
+                        incoming_parent[1],
+                        sampled=incoming_parent[2],
+                    )
+                    trace_id = incoming_parent[0] if continued else client.get_trace_id()
+                elif incoming_trace:
                     client.set_trace_id(incoming_trace)
-                    trace_id = incoming_trace
+                    trace_id = client.get_trace_id()
                 else:
                     client.reset_trace()  # fresh per-request trace
                     trace_id = client.get_trace_id()
@@ -362,6 +385,11 @@ class AllStakASGIMiddleware:
                 request_id=request_id,
                 exc_to_capture=exc_to_capture,
             )
+            if client is not None:
+                try:
+                    client.reset_trace()
+                except Exception:
+                    pass
 
     # ------------------------------------------------------------------
     # Finalization — telemetry, span close, error capture. Fully fail-open.
@@ -462,6 +490,15 @@ class AllStakASGIMiddleware:
                         ),
                         mechanism={"type": _MECHANISM_TYPE, "handled": True},
                     )
+                    # Stamp so the framework's follow-up exception log (Starlette
+                    # logs unhandled errors) is not re-reported by the logging
+                    # bridge as a second error event. Fully fail-open.
+                    try:
+                        from .logging import mark_exception_captured
+
+                        mark_exception_captured(exc_to_capture)
+                    except Exception:
+                        pass
                 else:
                     # 5xx response with no propagated exception (e.g.
                     # HTTPException(503) handled by the framework).
@@ -537,3 +574,121 @@ class AllStakFastAPI:
             failed_request_status_codes=failed_request_status_codes,
             http_methods_to_capture=http_methods_to_capture,
         )
+
+
+# Marker on a Starlette app instance once our middleware has been auto-attached,
+# so the patched ``build_middleware_stack`` (re)builds idempotently and we never
+# stack the middleware twice on the same app.
+_AUTO_ATTACHED_ATTR = "_allstak_asgi_auto_attached"
+
+# Sentinel on the patched ``Starlette.__call__`` so :func:`autoinstrument` is
+# itself idempotent across repeated init / import.
+_AUTOINSTRUMENT_MARKER = "_allstak_autoinstrument_patched"
+
+
+def _app_already_has_middleware(app: Any) -> bool:
+    """Whether ``AllStakASGIMiddleware`` is already on the app's middleware list.
+
+    Honours both the auto-attach marker and a manual
+    :class:`AllStakFastAPI` / ``add_middleware(AllStakASGIMiddleware, ...)``
+    registration so the import-time shim never double-wraps an app the developer
+    instrumented by hand.
+    """
+    if getattr(app, _AUTO_ATTACHED_ATTR, False):
+        return True
+    try:
+        for mw in getattr(app, "user_middleware", []) or []:
+            cls = getattr(mw, "cls", None)
+            if cls is AllStakASGIMiddleware:
+                return True
+    except Exception:
+        pass
+    return False
+
+
+def autoinstrument(
+    *,
+    service: str = "",
+    transaction_style: str = "url",
+    failed_request_status_codes: Optional[Iterable[int]] = None,
+    http_methods_to_capture: Optional[Iterable[str]] = None,
+) -> bool:
+    """Auto-attach :class:`AllStakASGIMiddleware` to every Starlette/FastAPI app.
+
+    Patches ``starlette.applications.Starlette.__call__`` — the request entry
+    point both Starlette and FastAPI funnel through (FastAPI's ``__call__``
+    delegates to ``super().__call__``). On the first request, before Starlette
+    materialises its middleware stack (``middleware_stack is None``), the AllStak
+    middleware is inserted via ``add_middleware`` so it wraps the whole app with
+    no ``AllStakFastAPI(app)`` line. Patching ``__call__`` rather than
+    ``build_middleware_stack`` matters because FastAPI *overrides*
+    ``build_middleware_stack`` (so a Starlette-level patch there would be
+    shadowed), while it inherits ``__call__``.
+
+    * **Idempotent.** Safe to call repeatedly; the patch is installed once and
+      each app is wrapped at most once (guarded by :func:`_app_already_has_middleware`).
+    * **Preserves manual setup.** An app already wrapped via
+      :class:`AllStakFastAPI` is left untouched — no double middleware.
+    * **Only active while initialized.** The wrap happens only while an SDK
+      client exists, so the global patch never instruments unrelated apps when
+      the SDK was never init'd / was torn down.
+    * **Fail-open.** If Starlette is unavailable or patching fails, returns
+      ``False`` and changes nothing; a real request is never broken.
+
+    Returns ``True`` when the patch is now in place, ``False`` otherwise.
+    """
+    if not _STARLETTE_AVAILABLE:
+        return False
+    try:
+        from starlette.applications import Starlette
+    except Exception:
+        return False
+
+    original_call = getattr(Starlette, "__call__", None)
+    if original_call is None:
+        return False
+    if getattr(original_call, _AUTOINSTRUMENT_MARKER, False):
+        return True  # already patched
+
+    def _maybe_attach(app: Any) -> None:
+        # Insert our middleware just-in-time, before the stack is built, so it
+        # wraps the app outermost. Idempotent per app and fully fail-open. Only
+        # attach while an SDK client is live and only for HTTP apps that have
+        # not yet built their stack (add_middleware raises once started).
+        try:
+            import allstak
+
+            if allstak.get_client() is None:
+                return
+            if getattr(app, "middleware_stack", "unset") is not None:
+                # Stack already built — too late to add_middleware safely.
+                return
+            if _app_already_has_middleware(app):
+                return
+            app.add_middleware(
+                AllStakASGIMiddleware,
+                service=service,
+                transaction_style=transaction_style,
+                failed_request_status_codes=failed_request_status_codes,
+                http_methods_to_capture=http_methods_to_capture,
+            )
+            try:
+                setattr(app, _AUTO_ATTACHED_ATTR, True)
+            except Exception:
+                pass
+        except Exception:
+            # Never let observability wiring break request handling.
+            pass
+
+    async def patched_call(self: Any, scope: Any, receive: Any, send: Any) -> Any:
+        if scope.get("type") == "http":
+            _maybe_attach(self)
+        return await original_call(self, scope, receive, send)
+
+    try:
+        setattr(patched_call, _AUTOINSTRUMENT_MARKER, True)
+        Starlette.__call__ = patched_call  # type: ignore[assignment]
+    except Exception:
+        return False
+    logger.debug("[AllStak] FastAPI/Starlette autoinstrument installed")
+    return True

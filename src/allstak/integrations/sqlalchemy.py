@@ -42,6 +42,28 @@ def install(engine: Any) -> None:
         conn: Any, cursor: Any, statement: str, parameters: Any, context: Any, executemany: bool
     ) -> None:
         context._allstak_start = time.time()
+        try:
+            import allstak
+            from ..modules.database import detect_query_type, normalize_query
+
+            client = allstak.get_client()
+            if client is not None:
+                normalized = normalize_query(statement or "")
+                db_type = ""
+                try:
+                    db_type = engine.dialect.name or ""
+                except Exception:
+                    pass
+                context._allstak_span = client.start_span(
+                    "db.query",
+                    description=normalized[:300],
+                    tags={
+                        "db.system": db_type,
+                        "db.operation": detect_query_type(normalized),
+                    },
+                )
+        except Exception:
+            context._allstak_span = None
 
     def _after_cursor_execute(
         conn: Any, cursor: Any, statement: str, parameters: Any, context: Any, executemany: bool
@@ -96,6 +118,21 @@ def _record(statement: str, cursor: Any, ctx: Any, *, status: str, error: Option
         except Exception:
             pass
 
+        span = getattr(ctx, "_allstak_span", None) if ctx is not None else None
+        span_context = {}
+        if span is not None:
+            try:
+                span_context = {
+                    "trace_id": getattr(span, "trace_id", "") or "",
+                    "span_id": getattr(span, "span_id", "") or "",
+                    "parent_span_id": getattr(span, "parent_span_id", "") or "",
+                }
+                span.set_tag("db.system", db_type)
+                span.set_tag("db.name", db_name)
+                span.finish("error" if status == "error" else "ok")
+            except Exception:
+                span_context = {}
+
         client.database.record(
             normalized_query=norm,
             duration_ms=duration,
@@ -105,6 +142,7 @@ def _record(statement: str, cursor: Any, ctx: Any, *, status: str, error: Option
             database_type=db_type,
             query_type=detect_query_type(norm),
             rows_affected=rows,
+            **span_context,
         )
     except Exception as exc:
         logger.debug("[AllStak] SQLAlchemy record failed: %s", exc)

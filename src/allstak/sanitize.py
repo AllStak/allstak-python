@@ -134,8 +134,6 @@ VALUE_SCRUB_SKIP_KEYS: frozenset[str] = frozenset({
     "url",             # URLs/paths have their own URL redactor
     "path",
     "queryhash",
-    "fingerprint",
-    "errorfingerprint",
 })
 
 # Cap how deep we recurse and how long a string we will scan. A pathological
@@ -164,6 +162,9 @@ _IPV4_OCTET = r"(?:25[0-5]|2[0-4]\d|1?\d?\d)"
 _IPV4_RE = re.compile(
     r"\b" + _IPV4_OCTET + r"(?:\." + _IPV4_OCTET + r"){3}\b"
 )
+
+_BEARER_RE = re.compile(r"\bBearer\s+[A-Za-z0-9._~+/-]+=*", re.IGNORECASE)
+_JWT_RE = re.compile(r"\beyJ[A-Za-z0-9_-]*\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\b")
 
 
 def _luhn_valid(digits: str) -> bool:
@@ -218,6 +219,8 @@ def _scrub_string(text: str, send_default_pii: bool) -> str:
         # ALWAYS-ON layer (A).
         out = _scrub_credit_cards(text)
         out = _SSN_RE.sub(REDACTED, out)
+        out = _BEARER_RE.sub(REDACTED, out)
+        out = _JWT_RE.sub(REDACTED, out)
         # PII layer (B) — disabled when the operator opted into PII.
         if not send_default_pii:
             out = _EMAIL_RE.sub(REDACTED, out)

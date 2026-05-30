@@ -298,6 +298,23 @@ def test_key_based_redaction_still_works_alongside_values():
     assert "dan@x.com" not in out["message"]
 
 
+def test_bearer_and_jwt_values_are_always_redacted():
+    jwt = "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjMifQ.signature"
+    out = scrub_values(
+        {
+            "message": f"Authorization: Bearer should_not_leak {jwt}",
+            "fingerprint": [f"Bearer should_not_leak", jwt],
+        },
+        send_default_pii=True,
+    )
+
+    raw = str(out)
+    assert "should_not_leak" not in raw
+    assert jwt not in raw
+    assert out["message"] == "Authorization: [REDACTED] [REDACTED]"
+    assert out["fingerprint"] == [REDACTED, REDACTED]
+
+
 def test_user_in_skip_keys():
     assert "user" in VALUE_SCRUB_SKIP_KEYS
     assert "stacktrace" in VALUE_SCRUB_SKIP_KEYS

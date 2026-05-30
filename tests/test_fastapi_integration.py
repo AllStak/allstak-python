@@ -598,6 +598,30 @@ def test_response_carries_trace_headers(client, spied_client):
 
 def test_incoming_trace_id_is_honored(client, spied_client):
     incoming = "abc123def4567890abc123def4567890"
-    resp = client.get("/sync", headers={"x-allstak-trace-id": incoming})
+    resp = client.get(
+        "/sync",
+        headers={"x-allstak-trace-id": incoming, "traceparent": "invalid"},
+    )
     assert resp.status_code == 200
     assert resp.headers.get("x-allstak-trace-id") == incoming
+
+
+def test_incoming_traceparent_is_continued(client, spied_client):
+    incoming_trace = "a" * 32
+    parent_span = "b" * 16
+    resp = client.get("/sync", headers={"traceparent": f"00-{incoming_trace}-{parent_span}-01"})
+
+    assert resp.status_code == 200
+    assert resp.headers.get("x-allstak-trace-id") == incoming_trace
+    assert resp.headers.get("traceparent", "").startswith(f"00-{incoming_trace}-")
+    assert spied_client["spans"][0].trace_id == incoming_trace
+    assert spied_client["spans"][0].parent_span_id == parent_span
+
+
+def test_invalid_traceparent_is_ignored(client, spied_client):
+    resp = client.get("/sync", headers={"traceparent": f"00-{'g' * 32}-{'b' * 16}-01"})
+
+    assert resp.status_code == 200
+    assert resp.headers.get("x-allstak-trace-id") != "g" * 32
+    assert len(spied_client["spans"][0].trace_id) == 32
+    assert spied_client["spans"][0].parent_span_id == ""

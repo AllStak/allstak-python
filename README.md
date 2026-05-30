@@ -47,12 +47,44 @@ allstak.capture_exception(RuntimeError("checkout failed"))
 
 ## FastAPI
 
+After `allstak.init(...)`, FastAPI / Starlette apps are auto-instrumented — no
+extra line needed:
+
+```python
+import allstak
+from fastapi import FastAPI
+
+allstak.init(api_key="ask_live_...")
+
+app = FastAPI()  # inbound request telemetry + error capture are already wired
+```
+
+To attach explicitly (or to set a service name / disable the auto-attach via
+`allstak.init(..., capture_fastapi=False)`):
+
 ```python
 from fastapi import FastAPI
 from allstak.integrations.fastapi import AllStakFastAPI
 
 app = FastAPI()
 AllStakFastAPI(app, service="checkout-api")
+```
+
+## Logs
+
+`allstak.init(...)` auto-attaches the logging bridge (disable with
+`capture_logs=False`), so standard-library logs flow to AllStak with no extra
+code. `ERROR`/`CRITICAL` records become error events (with the exception + stack
+for `logger.exception(...)`), and lower levels become breadcrumbs:
+
+```python
+import logging
+
+logging.getLogger("checkout").error("payment declined")
+try:
+    charge()
+except Exception:
+    logging.getLogger("checkout").exception("charge crashed")  # captured with stack
 ```
 
 ## Flask
@@ -67,11 +99,28 @@ AllStakFlask(app)
 
 ## Django
 
-Add the middleware:
+Add `"allstak"` to `INSTALLED_APPS` and the SDK auto-inserts its request
+middleware for you — no manual `MIDDLEWARE` edit needed:
+
+```python
+INSTALLED_APPS = [
+    # ...
+    "allstak",
+]
+
+ALLSTAK = {
+    "api_key": "ask_live_...",
+    "environment": "production",
+    # "auto_middleware": False,  # opt out of auto-insertion
+}
+```
+
+Prefer to wire it by hand? Add the middleware at the front of the stack
+(`AllStakDjangoMiddleware` is an alias of the same class):
 
 ```python
 MIDDLEWARE = [
-    "allstak.integrations.django.AllStakDjangoMiddleware",
+    "allstak.integrations.django.AllStakMiddleware",
     *MIDDLEWARE,
 ]
 ```

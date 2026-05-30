@@ -4,14 +4,15 @@ from __future__ import annotations
 
 import logging
 import random
+import secrets
 import threading
 import time
-import uuid
 from contextvars import ContextVar
 from typing import Any, Callable, Dict, List, Optional
 
 from ..buffer import FlushBuffer
 from ..config import AllStakConfig
+from ..propagation import normalize_span_id, normalize_trace_id
 from ..transport import AllStakAuthError, AllStakTransportError, HttpTransport
 
 logger = logging.getLogger("allstak.sdk")
@@ -185,16 +186,42 @@ class TracingModule:
     def get_trace_id(self) -> str:
         """Get the current trace ID, creating one if none exists."""
         trace_id = self._current_trace_id.get()
-        if trace_id is None:
-            trace_id = uuid.uuid4().hex
+        normalized = normalize_trace_id(trace_id)
+        if normalized is None:
+            trace_id = secrets.token_hex(16)
             self._current_trace_id.set(trace_id)
-        return trace_id
+            return trace_id
+        if normalized != trace_id:
+            self._current_trace_id.set(normalized)
+        return normalized
 
     def set_trace_id(self, trace_id: str) -> None:
         """Set the trace ID explicitly (e.g. from an incoming request header)."""
-        self._current_trace_id.set(trace_id)
+        normalized = normalize_trace_id(trace_id)
+        if normalized is None:
+            self.reset_trace()
+            return
+        self._current_trace_id.set(normalized)
+        self._span_stack.set([])
         # A fresh trace context — re-decide sampling on next access.
         self._sampled.set(None)
+
+    def continue_trace(
+        self,
+        trace_id: str,
+        parent_span_id: str,
+        *,
+        sampled: Optional[bool] = None,
+    ) -> bool:
+        """Continue an inbound W3C trace with the upstream span as parent."""
+        normalized_trace = normalize_trace_id(trace_id)
+        normalized_parent = normalize_span_id(parent_span_id)
+        if normalized_trace is None or normalized_parent is None:
+            return False
+        self._current_trace_id.set(normalized_trace)
+        self._span_stack.set([normalized_parent])
+        self._sampled.set(sampled)
+        return True
 
     def is_sampled(self) -> bool:
         """Return the sampling decision for the current trace.
@@ -245,7 +272,7 @@ class TracingModule:
                 span.finish("error")
                 raise
         """
-        span_id = uuid.uuid4().hex
+        span_id = secrets.token_hex(8)
         stack = list(self._span_stack.get())
         parent_span_id = stack[-1] if stack else ""
         trace_id = self.get_trace_id()

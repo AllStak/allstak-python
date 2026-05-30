@@ -21,7 +21,7 @@ _DEFAULT_MAX_BREADCRUMBS = 50
 
 
 class ErrorModule:
-    SDK_VERSION = "0.1.2"
+    SDK_VERSION = "0.2.0"
 
     """
     Captures exceptions and sends them to AllStak.
@@ -191,10 +191,11 @@ class ErrorModule:
         # Single capture chokepoint. Order:
         #   1. sample_rate drop (before before_send — dropped events never
         #      reach the user callback)
-        #   2. before_send hook (may modify the event or drop it via None;
+        #   2. built-in sanitization before before_send
+        #   3. before_send hook (may modify the event or drop it via None;
         #      fail-open if it raises)
-        #   3. PII sanitize
-        #   4. transport
+        #   4. final built-in sanitization after before_send
+        #   5. transport
         #
         # 1. Probabilistic sampling for error/message events.
         sample_rate = getattr(self._config, "sample_rate", 1.0)
@@ -202,9 +203,9 @@ class ErrorModule:
             logger.debug("[AllStak] event dropped by sample_rate=%.3f", sample_rate)
             return None
 
-        event = payload.to_dict()
+        event = self._sanitize_event(payload.to_dict())
 
-        # 2. before_send hook — runs on the structured event before sanitize.
+        # 3. before_send hook — runs on an already-sanitized structured event.
         before_send = getattr(self._config, "before_send", None)
         if before_send is not None:
             try:
@@ -215,14 +216,28 @@ class ErrorModule:
                 event = result
             except Exception as cb_err:
                 # Fail open: a user callback must never crash capture. Fall
-                # back to sending the original, un-modified event.
+                # back to sending the already-sanitized event.
                 logger.debug("[AllStak] before_send raised (fail-open): %s", cb_err)
 
-        # 3. Sanitize the entire wire payload before transport — covers user,
+        # 4. Sanitize again after before_send so hooks cannot reintroduce
+        # credentials, cookies, tokens, card numbers, or private nested data.
+        wire_payload = self._sanitize_event(event)
+        status, body = self._transport.post(_INGEST_PATH, wire_payload)
+        if status == 202:
+            event_id: Optional[str] = None
+            data = body.get("data") or {}
+            if isinstance(data, dict):
+                event_id = data.get("id")
+            return event_id
+        logger.debug("[AllStak] Error ingestion returned %d: %s", status, body)
+        return None
+
+    def _sanitize_event(self, event: Dict[str, Any]) -> Dict[str, Any]:
+        # Sanitize the entire wire payload before transport — covers user,
         # metadata, breadcrumbs, request_context, contexts, and any nested
         # values that match the canonical denylist. Pure: no caller mutation.
         wire_payload = scrub(event)
-        # 3b. Value-pattern PII scrubbing (CC/SSN always; email/IPv4 unless
+        # Value-pattern PII scrubbing (CC/SSN always; email/IPv4 unless
         # send_default_pii). Protected keys (explicit user object, stack-frame
         # paths, release/sdk identity, URLs, session/trace ids) are skipped by
         # the scrubber so legitimate data is not corrupted. Fail-open inside
@@ -239,15 +254,7 @@ class ErrorModule:
         # inside user metadata stay redacted.
         if isinstance(wire_payload, dict) and isinstance(event, dict) and "sessionId" in event:
             wire_payload["sessionId"] = event["sessionId"]
-        status, body = self._transport.post(_INGEST_PATH, wire_payload)
-        if status == 202:
-            event_id: Optional[str] = None
-            data = body.get("data") or {}
-            if isinstance(data, dict):
-                event_id = data.get("id")
-            return event_id
-        logger.debug("[AllStak] Error ingestion returned %d: %s", status, body)
-        return None
+        return wire_payload if isinstance(wire_payload, dict) else event
 
     @staticmethod
     def _extract_stack_trace(exc: BaseException) -> List[str]:

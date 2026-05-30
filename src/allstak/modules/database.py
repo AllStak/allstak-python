@@ -47,6 +47,53 @@ def detect_query_type(sql: str) -> str:
     return first_word if first_word in ("SELECT", "INSERT", "UPDATE", "DELETE") else "OTHER"
 
 
+def _start_db_span(
+    *,
+    operation: str,
+    description: str,
+    database_type: str,
+    query_type: str,
+) -> Any:
+    try:
+        import allstak
+
+        client = allstak.get_client()
+        if client is None:
+            return None
+        return client.start_span(
+            operation,
+            description=description,
+            tags={
+                "db.system": database_type,
+                "db.operation": query_type,
+            },
+        )
+    except Exception:
+        return None
+
+
+def _span_record_context(span: Any) -> Dict[str, str]:
+    if span is None:
+        return {}
+    try:
+        return {
+            "trace_id": getattr(span, "trace_id", "") or "",
+            "span_id": getattr(span, "span_id", "") or "",
+            "parent_span_id": getattr(span, "parent_span_id", "") or "",
+        }
+    except Exception:
+        return {}
+
+
+def _finish_span(span: Any, status: str) -> None:
+    if span is None:
+        return
+    try:
+        span.finish(status)
+    except Exception:
+        pass
+
+
 # ---------------------------------------------------------------------------
 # Database module
 # ---------------------------------------------------------------------------
@@ -89,6 +136,7 @@ class DatabaseModule:
         rows_affected: int = -1,
         trace_id: str = "",
         span_id: str = "",
+        parent_span_id: str = "",
     ) -> None:
         """
         Record a single database query.
@@ -103,8 +151,19 @@ class DatabaseModule:
         :param rows_affected: Number of rows affected (``-1`` if unknown).
         :param trace_id: Distributed trace correlation ID.
         :param span_id: Span correlation ID.
+        :param parent_span_id: Parent span correlation ID.
         """
         try:
+            if not trace_id or not span_id:
+                try:
+                    import allstak
+
+                    client = allstak.get_client()
+                    if client is not None:
+                        trace_id = trace_id or client.get_trace_id()
+                        span_id = span_id or (client.get_current_span_id() or "")
+                except Exception:
+                    pass
             if query_type is None:
                 query_type = detect_query_type(normalized_query)
 
@@ -124,6 +183,8 @@ class DatabaseModule:
                 "spanId": span_id,
                 "rowsAffected": rows_affected,
             }
+            if parent_span_id:
+                item["parentSpanId"] = parent_span_id
             self._flush_buffer.push(item)
         except Exception as exc:
             logger.debug("[AllStak] database.record() failed silently: %s", exc)
@@ -179,6 +240,12 @@ def instrument_psycopg2(db_module: DatabaseModule) -> None:
         def _patched_execute(self: Any, query: Any, vars: Any = None) -> Any:
             start = time.time()
             normalized = normalize_query(str(query))
+            span = _start_db_span(
+                operation="db.query",
+                description=normalized[:300],
+                database_type="postgresql",
+                query_type=detect_query_type(normalized),
+            )
             try:
                 result = _original_execute(self, query, vars)
                 duration = (time.time() - start) * 1000
@@ -194,7 +261,9 @@ def instrument_psycopg2(db_module: DatabaseModule) -> None:
                     database_type="postgresql",
                     database_name=db_name,
                     rows_affected=self.rowcount if self.rowcount >= 0 else -1,
+                    **_span_record_context(span),
                 )
+                _finish_span(span, "ok")
                 return result
             except Exception as e:
                 duration = (time.time() - start) * 1000
@@ -204,7 +273,9 @@ def instrument_psycopg2(db_module: DatabaseModule) -> None:
                     status="error",
                     error_message=str(e)[:500],
                     database_type="postgresql",
+                    **_span_record_context(span),
                 )
+                _finish_span(span, "error")
                 raise
 
         psycopg2.extensions.cursor.execute = _patched_execute  # type: ignore[assignment]
@@ -233,7 +304,14 @@ def instrument_sqlite3(db_module: DatabaseModule) -> None:
 
     _original_connect = sqlite3.connect
 
-    def _record(normalized: str, start: float, status: str, err: Optional[str] = None, rows: int = -1) -> None:
+    def _record(
+        normalized: str,
+        start: float,
+        status: str,
+        err: Optional[str] = None,
+        rows: int = -1,
+        span: Any = None,
+    ) -> None:
         duration = (time.time() - start) * 1000
         try:
             db_module.record(
@@ -243,31 +321,46 @@ def instrument_sqlite3(db_module: DatabaseModule) -> None:
                 error_message=err,
                 database_type="sqlite",
                 rows_affected=rows,
+                **_span_record_context(span),
             )
+            _finish_span(span, "error" if status == "error" else "ok")
         except Exception:
+            _finish_span(span, "error")
             pass
 
     class _TrackedCursor(sqlite3.Cursor):
         def execute(self, sql, parameters=()):  # type: ignore[override]
             start = time.time()
             normalized = normalize_query(str(sql))
+            span = _start_db_span(
+                operation="db.query",
+                description=normalized[:300],
+                database_type="sqlite",
+                query_type=detect_query_type(normalized),
+            )
             try:
                 result = super().execute(sql, parameters)
-                _record(normalized, start, "success", rows=self.rowcount if self.rowcount >= 0 else -1)
+                _record(normalized, start, "success", rows=self.rowcount if self.rowcount >= 0 else -1, span=span)
                 return result
             except Exception as e:
-                _record(normalized, start, "error", err=str(e)[:500])
+                _record(normalized, start, "error", err=str(e)[:500], span=span)
                 raise
 
         def executemany(self, sql, seq_of_parameters):  # type: ignore[override]
             start = time.time()
             normalized = normalize_query(str(sql))
+            span = _start_db_span(
+                operation="db.query",
+                description=normalized[:300],
+                database_type="sqlite",
+                query_type=detect_query_type(normalized),
+            )
             try:
                 result = super().executemany(sql, seq_of_parameters)
-                _record(normalized, start, "success", rows=self.rowcount if self.rowcount >= 0 else -1)
+                _record(normalized, start, "success", rows=self.rowcount if self.rowcount >= 0 else -1, span=span)
                 return result
             except Exception as e:
-                _record(normalized, start, "error", err=str(e)[:500])
+                _record(normalized, start, "error", err=str(e)[:500], span=span)
                 raise
 
     class _TrackedConnection(sqlite3.Connection):

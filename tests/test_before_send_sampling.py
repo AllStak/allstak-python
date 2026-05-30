@@ -87,6 +87,49 @@ def test_before_send_receives_message_and_exception_events():
     assert "ValueError" in seen
 
 
+def test_final_sanitization_after_before_send_blocks_reintroduced_secrets():
+    canary = "should_not_leak"
+    jwt = "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjMifQ.signature"
+
+    def before_send(event: Dict[str, Any]) -> Dict[str, Any]:
+        event["metadata"] = {
+            "Authorization": f"Bearer {canary}",
+            "Cookie": f"sid={canary}",
+            "nested": {
+                "password": canary,
+                "apiKey": canary,
+                "jwt": jwt,
+                "values": [f"Bearer {canary}", {"secret": canary}],
+            },
+            "card": "4111111111111111",
+        }
+        event["breadcrumbs"] = [
+            {"type": "default", "message": f"Bearer {canary}", "data": {"token": canary}}
+        ]
+        event["fingerprint"] = [f"Bearer {canary}"]
+        return event
+
+    mod, transport = _module(before_send=before_send)
+    mod.capture_error("ValueError", "hook secret")
+
+    _, payload = transport.posts[0]
+    raw = str(payload)
+    assert canary not in raw
+    assert jwt not in raw
+    assert "4111111111111111" not in raw
+    assert payload["metadata"]["Authorization"] == "[REDACTED]"
+    assert payload["metadata"]["Cookie"] == "[REDACTED]"
+    assert payload["metadata"]["nested"]["password"] == "[REDACTED]"
+    assert payload["metadata"]["nested"]["apiKey"] == "[REDACTED]"
+    assert payload["metadata"]["nested"]["jwt"] == "[REDACTED]"
+    assert payload["metadata"]["nested"]["values"][0] == "[REDACTED]"
+    assert payload["metadata"]["nested"]["values"][1]["secret"] == "[REDACTED]"
+    assert payload["metadata"]["card"] == "[REDACTED]"
+    assert payload["breadcrumbs"][0]["message"] == "[REDACTED]"
+    assert payload["breadcrumbs"][0]["data"]["token"] == "[REDACTED]"
+    assert payload["fingerprint"][0] == "[REDACTED]"
+
+
 # --------------------------------------------------------------------------
 # sample_rate
 # --------------------------------------------------------------------------

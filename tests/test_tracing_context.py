@@ -39,6 +39,8 @@ def test_finished_span_restores_current_span_stack():
     child = tracing.start_span("child")
 
     assert tracing.get_current_span_id() == child.span_id
+    assert len(root.span_id) == 16
+    assert len(child.span_id) == 16
     child.finish()
     assert tracing.get_current_span_id() == root.span_id
     root.finish()

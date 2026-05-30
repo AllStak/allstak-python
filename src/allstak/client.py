@@ -153,6 +153,22 @@ class AllStakClient:
             except Exception as e:
                 logger.debug("[AllStak] auto-breadcrumb instrumentation failed: %s", e)
 
+        # Auto-attach the stdlib-logging -> AllStak bridge so log records flow to
+        # AllStak with no manual install_logging() call. ERROR/FATAL records
+        # (and any with exc_info) become error events; INFO+ below that become
+        # breadcrumbs. Default-on; opt out with config.capture_logs=False.
+        # Idempotent (replaces any prior handler) and fully fail-open.
+        if config.capture_logs:
+            try:
+                from .integrations.logging import install_logging
+                install_logging(
+                    level=config.capture_logs_level,
+                    breadcrumb_level=config.capture_logs_breadcrumb_level,
+                    logger_name=config.capture_logs_logger_name,
+                )
+            except Exception as e:
+                logger.debug("[AllStak] logging bridge auto-install failed: %s", e)
+
         # Wire automatic database instrumentation
         try:
             enable_db_auto_instrumentation(self._database)
@@ -313,6 +329,16 @@ class AllStakClient:
     def set_trace_id(self, trace_id: str) -> None:
         """Set the trace ID explicitly (e.g. from an incoming request header)."""
         self._tracing.set_trace_id(trace_id)
+
+    def continue_trace(
+        self,
+        trace_id: str,
+        parent_span_id: str,
+        *,
+        sampled: Optional[bool] = None,
+    ) -> bool:
+        """Continue an inbound W3C trace with the upstream span as parent."""
+        return self._tracing.continue_trace(trace_id, parent_span_id, sampled=sampled)
 
     def get_current_span_id(self) -> Optional[str]:
         """Get the current active span ID, or None if no span is active."""
@@ -605,6 +631,11 @@ def init(
     max_retries: int = 5,
     auto_breadcrumbs: bool = True,
     max_breadcrumbs: int = 50,
+    capture_logs: bool = True,
+    capture_logs_level: int = logging.ERROR,
+    capture_logs_breadcrumb_level: int = logging.INFO,
+    capture_logs_logger_name: Optional[str] = None,
+    capture_fastapi: bool = True,
     install_excepthook: bool = True,
     install_threading_excepthook: bool = True,
     before_send: Optional[Callable[[Dict[str, Any]], Optional[Dict[str, Any]]]] = None,
@@ -632,6 +663,20 @@ def init(
     :param flush_interval_ms: Background flush interval in milliseconds.
     :param buffer_size: Max buffered items per feature before eviction.
     :param debug: Enable verbose SDK debug logging to stderr.
+    :param capture_logs: Auto-attach the stdlib-logging bridge so log records
+        flow to AllStak with no manual ``install_logging()`` call. ERROR/FATAL
+        records (and any carrying ``exc_info``) become error events; lower
+        records become breadcrumbs. Default True; set False to opt out.
+    :param capture_logs_level: Log level at/above which records become error
+        events (default ``logging.ERROR``). Only used when ``capture_logs``.
+    :param capture_logs_breadcrumb_level: Log level at/above which records
+        (below the event level) become breadcrumbs (default ``logging.INFO``).
+        Only used when ``capture_logs``.
+    :param capture_logs_logger_name: Logger to attach the bridge to; ``None``
+        (default) uses the root logger. Only used when ``capture_logs``.
+    :param capture_fastapi: Auto-attach the AllStak ASGI middleware to every
+        FastAPI / Starlette app so inbound capture needs no ``AllStakFastAPI(app)``
+        call. Default True; no-op when starlette/fastapi isn't installed.
     :param install_excepthook: Install ``sys.excepthook`` to capture uncaught
         exceptions on the main thread. Default True.
     :param install_threading_excepthook: Install ``threading.excepthook`` to
@@ -686,6 +731,11 @@ def init(
             max_retries=max_retries,
             auto_breadcrumbs=auto_breadcrumbs,
             max_breadcrumbs=max_breadcrumbs,
+            capture_logs=capture_logs,
+            capture_logs_level=capture_logs_level,
+            capture_logs_breadcrumb_level=capture_logs_breadcrumb_level,
+            capture_logs_logger_name=capture_logs_logger_name,
+            capture_fastapi=capture_fastapi,
             install_excepthook=install_excepthook,
             install_threading_excepthook=install_threading_excepthook,
             before_send=before_send,
@@ -721,6 +771,16 @@ def init(
             install_celery()
         except Exception as e:  # pragma: no cover — never fail init
             logger.debug("[AllStak] celery auto-install failed: %s", e)
+
+        # Auto-attach the ASGI middleware to every FastAPI / Starlette app so
+        # inbound capture works without an AllStakFastAPI(app) line. No-op when
+        # starlette/fastapi isn't installed or when opted out.
+        if config.capture_fastapi:
+            try:
+                from .integrations.fastapi import autoinstrument as _autoinstrument_fastapi
+                _autoinstrument_fastapi()
+            except Exception as e:  # pragma: no cover — never fail init
+                logger.debug("[AllStak] FastAPI autoinstrument failed: %s", e)
 
         return _client
 

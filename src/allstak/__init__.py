@@ -48,6 +48,7 @@ from .client import (
     init,
 )
 from .config import AllStakConfig
+from .integrations.logging import AllStakLoggingHandler, install_logging
 from .spool import EventSpool
 from .models.breadcrumb import Breadcrumb
 from .models.errors import RequestContext, UserContext
@@ -57,7 +58,7 @@ from .models.replay import ReplayEvent, ReplayPayload
 from .models.heartbeat import HeartbeatPayload
 from .modules.tracing import Span, TracingModule
 
-__version__ = "0.1.2"
+__version__ = "0.2.0"
 
 __all__ = [
     "__version__",
@@ -79,6 +80,9 @@ __all__ = [
     "HeartbeatPayload",
     "Span",
     "TracingModule",
+    # Logging bridge (public — auto-attached by init when capture_logs=True)
+    "install_logging",
+    "AllStakLoggingHandler",
     # Module-level shortcuts
     "capture_exception",
     "capture_error",

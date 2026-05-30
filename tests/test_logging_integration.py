@@ -10,6 +10,7 @@ from allstak import client as allstak_client
 from allstak.integrations.logging import (
     AllStakLoggingHandler,
     install_logging,
+    mark_exception_captured,
     _HANDLER_MARKER,
     _ALLSTAK_LOG_HANDLED,
 )
@@ -132,3 +133,150 @@ def test_skips_own_sdk_logs(sdk):
 
     assert events == []
     assert crumbs == []
+
+
+# ---------------------------------------------------------------------------
+# Auto-attach from init() gated by capture_logs (default-on)
+# ---------------------------------------------------------------------------
+
+def _ours_on_root() -> list:
+    root = logging.getLogger()
+    return [h for h in root.handlers if getattr(h, _HANDLER_MARKER, False)]
+
+
+def test_init_auto_attaches_logging_bridge_by_default(monkeypatch):
+    """init() with the default capture_logs=True attaches the bridge handler."""
+    root = logging.getLogger()
+    saved, saved_level = list(root.handlers), root.level
+    allstak_client._client = None
+    allstak_client._initialized_once = False
+    try:
+        allstak.init(api_key="ask_test", host="http://allstak.test")
+        ours = _ours_on_root()
+        assert len(ours) == 1
+        assert isinstance(ours[0], AllStakLoggingHandler)
+        assert ours[0].event_level == logging.ERROR
+    finally:
+        root.handlers = saved
+        root.setLevel(saved_level)
+        allstak_client._client = None
+        allstak_client._initialized_once = False
+
+
+def test_init_capture_logs_false_does_not_attach(monkeypatch):
+    root = logging.getLogger()
+    saved, saved_level = list(root.handlers), root.level
+    allstak_client._client = None
+    allstak_client._initialized_once = False
+    try:
+        allstak.init(
+            api_key="ask_test", host="http://allstak.test", capture_logs=False
+        )
+        assert _ours_on_root() == []
+    finally:
+        root.handlers = saved
+        root.setLevel(saved_level)
+        allstak_client._client = None
+        allstak_client._initialized_once = False
+
+
+def test_init_capture_logs_level_overrides(monkeypatch):
+    root = logging.getLogger()
+    saved, saved_level = list(root.handlers), root.level
+    allstak_client._client = None
+    allstak_client._initialized_once = False
+    try:
+        allstak.init(
+            api_key="ask_test",
+            host="http://allstak.test",
+            capture_logs_level=logging.CRITICAL,
+            capture_logs_breadcrumb_level=logging.WARNING,
+        )
+        ours = _ours_on_root()
+        assert len(ours) == 1
+        assert ours[0].event_level == logging.CRITICAL
+        assert ours[0].breadcrumb_level == logging.WARNING
+    finally:
+        root.handlers = saved
+        root.setLevel(saved_level)
+        allstak_client._client = None
+        allstak_client._initialized_once = False
+
+
+# ---------------------------------------------------------------------------
+# FATAL/CRITICAL promotion + trace/request stamping
+# ---------------------------------------------------------------------------
+
+def test_critical_record_promoted_to_fatal_level(sdk):
+    client, events, crumbs = sdk
+    install_logging(level=logging.ERROR, breadcrumb_level=logging.INFO)
+
+    logging.getLogger("myapp").critical("the sky is falling")
+
+    err_events = [e for e in events if e[0] == "error"]
+    assert len(err_events) == 1
+    # capture_error(cls, msg, **kwargs) -> kwargs is index 3 in the spy tuple.
+    assert err_events[0][3]["level"] == "fatal"
+
+
+def test_critical_with_exc_info_promoted_to_fatal_exception(sdk):
+    client, events, crumbs = sdk
+    install_logging(level=logging.ERROR, breadcrumb_level=logging.INFO)
+
+    log = logging.getLogger("myapp")
+    try:
+        raise RuntimeError("fatal boom")
+    except RuntimeError:
+        log.critical("crashed hard", exc_info=True)
+
+    exc_events = [e for e in events if e[0] == "exc"]
+    assert len(exc_events) == 1
+    assert isinstance(exc_events[0][1], RuntimeError)
+    assert exc_events[0][2]["level"] == "fatal"
+
+
+def test_event_metadata_stamps_trace_id(sdk):
+    client, events, crumbs = sdk
+    install_logging(level=logging.ERROR, breadcrumb_level=logging.INFO)
+
+    # Seed an active trace so the bridge can correlate the log to it.
+    client.set_trace_id("a" * 32)
+    logging.getLogger("myapp").error("with trace")
+
+    err_events = [e for e in events if e[0] == "error"]
+    assert len(err_events) == 1
+    meta = err_events[0][3]["metadata"]
+    assert meta["traceId"] == "a" * 32
+
+
+def test_event_metadata_stamps_request_id_from_record(sdk):
+    client, events, crumbs = sdk
+    install_logging(level=logging.ERROR, breadcrumb_level=logging.INFO)
+
+    # A request-scoped logging filter pattern: record.request_id attribute.
+    logging.getLogger("myapp").error("scoped", extra={"request_id": "req-123"})
+
+    err_events = [e for e in events if e[0] == "error"]
+    assert len(err_events) == 1
+    assert err_events[0][3]["metadata"]["requestId"] == "req-123"
+
+
+# ---------------------------------------------------------------------------
+# Dedup: an exception already reported by a framework integration is skipped
+# ---------------------------------------------------------------------------
+
+def test_already_captured_exception_is_not_double_reported(sdk):
+    client, events, crumbs = sdk
+    install_logging(level=logging.ERROR, breadcrumb_level=logging.INFO)
+
+    log = logging.getLogger("myapp")
+    try:
+        raise ValueError("already handled by the framework")
+    except ValueError as exc:
+        # Simulate a framework integration having already captured it.
+        mark_exception_captured(exc)
+        log.exception("framework will re-log this")
+
+    # No new error event — the bridge skipped the already-captured exception.
+    assert [e for e in events if e[0] == "exc"] == []
+    assert [e for e in events if e[0] == "error"] == []

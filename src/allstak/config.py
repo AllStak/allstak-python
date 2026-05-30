@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import os
 import subprocess
 from dataclasses import dataclass, field
@@ -10,7 +11,7 @@ from typing import Any, Callable, Dict, Optional
 
 # SDK version constant — the step-4 release fallback. Kept in lockstep with
 # pyproject.toml / __init__.__version__.
-_SDK_VERSION = "0.1.2"
+_SDK_VERSION = "0.2.0"
 
 
 # A "git runner" takes a list of git arguments (without the leading "git") and
@@ -172,6 +173,44 @@ class AllStakConfig:
 
     max_breadcrumbs: int = 50
     """Maximum number of breadcrumbs kept in the ring buffer."""
+
+    # --- Logging bridge (stdlib logging -> AllStak) ---
+    capture_logs: bool = True
+    """When True (default), :func:`allstak.init` auto-attaches the AllStak
+    logging handler to the root logger so standard-library log records flow to
+    AllStak with no manual ``install_logging()`` call. Records at/above
+    ``capture_logs_level`` become captured error events (promoting
+    ``logger.exception(...)`` / ``exc_info`` records to the errors stream with
+    the exception + stack), and records at/above ``capture_logs_breadcrumb_level``
+    (but below the event level) become breadcrumbs. Each forwarded record is
+    stamped with the active trace id / request id so logs correlate with the
+    request that produced them. Set False to opt out and wire the handler
+    yourself via :func:`allstak.install_logging`."""
+
+    capture_logs_level: int = logging.ERROR
+    """Log level at/above which records become captured error events. Records
+    carrying ``exc_info`` (``logger.exception`` / ``logger.error(..., exc_info=True)``)
+    are promoted to the errors stream with the exception + stack. Default
+    ``logging.ERROR``."""
+
+    capture_logs_breadcrumb_level: int = logging.INFO
+    """Log level at/above which records (but below ``capture_logs_level``)
+    become breadcrumbs for context on the next error. Default ``logging.INFO``."""
+
+    capture_logs_logger_name: Optional[str] = None
+    """Target logger for the auto-attached handler. ``None`` (default) attaches
+    to the root logger so every logger propagates into AllStak; set a dotted
+    logger name to scope capture to one logger subtree."""
+
+    # --- ASGI (FastAPI / Starlette) auto-instrumentation ---
+    capture_fastapi: bool = True
+    """When True (default), :func:`allstak.init` patches Starlette's
+    middleware-stack builder so every FastAPI / Starlette app auto-attaches the
+    AllStak ASGI middleware (inbound request telemetry, per-request trace
+    context, and 5xx error capture) with no ``AllStakFastAPI(app)`` line. An app
+    already wrapped manually is never double-instrumented. Fully fail-open and a
+    no-op when starlette/fastapi is not installed. Set False to opt out and wire
+    :class:`AllStakFastAPI` yourself."""
 
     # --- Release-health session tracking ---
     enable_auto_session_tracking: bool = True

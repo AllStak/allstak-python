@@ -12,6 +12,8 @@ Covers the "one session per process" lifecycle implemented in
 
 from __future__ import annotations
 
+import os
+import tempfile
 import threading
 from typing import Any, Dict
 
@@ -53,8 +55,13 @@ def _wait_for_start(transport: FakeTransport, timeout: float = 2.0) -> None:
 def _tracker(**config_kwargs) -> tuple[SessionTracker, FakeTransport]:
     transport = FakeTransport(disabled=config_kwargs.pop("_disabled", False),
                               raise_on=config_kwargs.pop("_raise_on", None))
+    state_path = config_kwargs.pop("_state_path", None)
+    if state_path is None:
+        fd, state_path = tempfile.mkstemp(prefix="allstak-session-test-", suffix=".json")
+        os.close(fd)
+        os.unlink(state_path)
     config = AllStakConfig(api_key="ask_test", release="v9.9.9", **config_kwargs)
-    return SessionTracker(transport, config), transport
+    return SessionTracker(transport, config, state_path=state_path), transport
 
 
 # --------------------------------------------------------------------------
@@ -127,12 +134,13 @@ def test_start_is_idempotent():
 
 
 def test_start_falls_back_to_sdk_version_when_no_release():
-    transport = FakeTransport()
-    config = AllStakConfig(api_key="ask_test", release=None, auto_detect_release=False)
     # With auto-detect off and no release, _effective_release falls back to
     # the SDK version constant; release must never be empty on the wire.
-    config.release = None
-    tracker = SessionTracker(transport, config)
+    # Route through the helper so persistence uses an isolated temp state path
+    # (a stale session in the SDK's default state file would otherwise be
+    # recovered as "abnormal" and emit a spurious sessions/end POST).
+    tracker, transport = _tracker(auto_detect_release=False)
+    tracker._config.release = None
     tracker.start()
     _wait_for_start(transport)
     assert len(transport.posts) == 1
@@ -234,6 +242,87 @@ def test_record_after_end_is_noop():
     assert tracker.current() is None
 
 
+def test_clean_shutdown_does_not_report_abnormal_on_next_start(tmp_path):
+    state_path = str(tmp_path / "session.json")
+    tracker, _ = _tracker(_state_path=state_path)
+    tracker.start()
+    tracker.end(None)
+
+    next_tracker, transport = _tracker(_state_path=state_path)
+    next_tracker.start()
+    _wait_for_start(transport)
+
+    assert [p for p in transport.posts if p[0].endswith("/sessions/end")] == []
+    assert len([p for p in transport.posts if p[0].endswith("/sessions/start")]) == 1
+
+
+def test_previous_open_session_is_reported_abnormal_on_next_start(tmp_path):
+    state_path = str(tmp_path / "session.json")
+    tracker, _ = _tracker(_state_path=state_path)
+    session = tracker.start()
+
+    next_tracker, transport = _tracker(_state_path=state_path)
+    next_tracker.start()
+    end_posts = [p for p in transport.posts if p[0].endswith("/sessions/end")]
+
+    assert len(end_posts) == 1
+    _, payload = end_posts[0]
+    assert payload["sessionId"] == session.id
+    assert payload["status"] == SessionStatus.ABNORMAL
+
+
+def test_previous_crashed_session_is_reported_crashed_on_next_start(tmp_path):
+    state_path = str(tmp_path / "session.json")
+    tracker, _ = _tracker(_state_path=state_path)
+    session = tracker.start()
+    tracker.record_crash()
+
+    next_tracker, transport = _tracker(_state_path=state_path)
+    next_tracker.start()
+    end_posts = [p for p in transport.posts if p[0].endswith("/sessions/end")]
+
+    assert len(end_posts) == 1
+    _, payload = end_posts[0]
+    assert payload["sessionId"] == session.id
+    assert payload["status"] == SessionStatus.CRASHED
+
+
+def test_corrupt_session_state_is_removed_safely(tmp_path):
+    state_path = tmp_path / "session.json"
+    state_path.write_text("{not-json", encoding="utf-8")
+    tracker, transport = _tracker(_state_path=str(state_path))
+
+    tracker.start()
+    _wait_for_start(transport)
+
+    assert [p for p in transport.posts if p[0].endswith("/sessions/end")] == []
+    assert len([p for p in transport.posts if p[0].endswith("/sessions/start")]) == 1
+
+
+def test_recovered_abnormal_session_is_not_reported_twice(tmp_path):
+    state_path = str(tmp_path / "session.json")
+    tracker, _ = _tracker(_state_path=state_path)
+    tracker.start()
+
+    second, transport = _tracker(_state_path=state_path)
+    second.start()
+    second.end(None)
+
+    third, third_transport = _tracker(_state_path=state_path)
+    third.start()
+
+    abnormal_second = [
+        p for p in transport.posts
+        if p[0].endswith("/sessions/end") and p[1]["status"] == SessionStatus.ABNORMAL
+    ]
+    abnormal_third = [
+        p for p in third_transport.posts
+        if p[0].endswith("/sessions/end") and p[1]["status"] == SessionStatus.ABNORMAL
+    ]
+    assert len(abnormal_second) == 1
+    assert abnormal_third == []
+
+
 # --------------------------------------------------------------------------
 # Client wiring — opt-out, session-id attachment, status transitions
 # --------------------------------------------------------------------------
@@ -264,6 +353,7 @@ def _client_with_tracker(monkeypatch, enable: bool = True):
         api_key="ask_test",
         release="v1.2.3",
         environment="staging",
+        offline_queue_dir=tempfile.mkdtemp(prefix="allstak-session-client-test-"),
         install_excepthook=False,
         install_threading_excepthook=False,
         auto_breadcrumbs=False,

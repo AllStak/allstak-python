@@ -2,7 +2,48 @@
 
 from __future__ import annotations
 
+import re
 from typing import Iterable, Optional
+
+
+_TRACE_ID_RE = re.compile(r"^[0-9a-f]{32}$")
+_SPAN_ID_RE = re.compile(r"^[0-9a-f]{16}$")
+_TRACEPARENT_RE = re.compile(
+    r"^\s*(?P<version>[0-9a-f]{2})-(?P<trace_id>[0-9a-f]{32})-"
+    r"(?P<span_id>[0-9a-f]{16})-(?P<flags>[0-9a-f]{2})(?:\s|$)"
+)
+
+
+def normalize_trace_id(trace_id: Optional[str]) -> Optional[str]:
+    value = (trace_id or "").strip().lower()
+    if not _TRACE_ID_RE.match(value) or value == "0" * 32:
+        return None
+    return value
+
+
+def normalize_span_id(span_id: Optional[str]) -> Optional[str]:
+    value = (span_id or "").strip().lower()
+    if not _SPAN_ID_RE.match(value) or value == "0" * 16:
+        return None
+    return value
+
+
+def parse_traceparent(value: Optional[str]) -> Optional[tuple[str, str, bool]]:
+    """Parse a W3C traceparent header.
+
+    Returns ``(trace_id, parent_span_id, sampled)`` for valid version ``00``
+    headers, otherwise ``None``. Invalid inbound headers are ignored rather
+    than coerced or padded.
+    """
+    match = _TRACEPARENT_RE.match((value or "").strip().lower())
+    if not match or match.group("version") != "00":
+        return None
+    trace_id = normalize_trace_id(match.group("trace_id"))
+    span_id = normalize_span_id(match.group("span_id"))
+    if not trace_id or not span_id:
+        return None
+    flags = int(match.group("flags"), 16)
+    return trace_id, span_id, bool(flags & 0x01)
 
 
 def allstak_baggage(trace_id: str, request_id: Optional[str] = None, span_id: Optional[str] = None) -> str:
@@ -46,26 +87,31 @@ def set_mapping_headers(
     compatibility with the previous always-sampled behaviour.
     """
 
+    normalized_trace_id = normalize_trace_id(trace_id)
+    normalized_span_id = normalize_span_id(span_id)
+    if not normalized_trace_id:
+        return
+
     def set_header(name: str, value: str, *, force: bool = False) -> None:
         if not force and not overwrite and hasattr(headers, "get") and headers.get(name):  # type: ignore[attr-defined]
             return
         headers[name] = value  # type: ignore[index]
 
-    set_header("x-allstak-trace-id", trace_id)
+    set_header("x-allstak-trace-id", normalized_trace_id)
     if request_id:
         set_header("x-allstak-request-id", request_id)
-    if span_id:
-        set_header("x-allstak-span-id", span_id)
-        set_header("traceparent", f"00-{trace_id}-{span_id[:16]}-{_trace_flags(sampled)}")
+    if normalized_span_id:
+        set_header("x-allstak-span-id", normalized_span_id)
+        set_header("traceparent", f"00-{normalized_trace_id}-{normalized_span_id}-{_trace_flags(sampled)}")
 
     baggage = merge_baggage(
         headers.get("baggage") if merge_existing and hasattr(headers, "get") else None,  # type: ignore[attr-defined]
-        trace_id,
+        normalized_trace_id,
         request_id,
-        span_id,
+        normalized_span_id,
     )
     set_header("baggage", baggage, force=True)
-    set_header("allstak-baggage", allstak_baggage(trace_id, request_id, span_id), force=True)
+    set_header("allstak-baggage", allstak_baggage(normalized_trace_id, request_id, normalized_span_id), force=True)
 
 
 def set_asgi_headers(
@@ -90,12 +136,17 @@ def set_asgi_headers(
     def add(name: str, value: str) -> None:
         existing.append((name.encode("latin-1"), value.encode("latin-1")))
 
-    add("x-allstak-trace-id", trace_id)
+    normalized_trace_id = normalize_trace_id(trace_id)
+    normalized_span_id = normalize_span_id(span_id)
+    if not normalized_trace_id:
+        return existing
+
+    add("x-allstak-trace-id", normalized_trace_id)
     if request_id:
         add("x-allstak-request-id", request_id)
-    if span_id:
-        add("x-allstak-span-id", span_id)
-        add("traceparent", f"00-{trace_id}-{span_id[:16]}-{_trace_flags(sampled)}")
-    add("baggage", merge_baggage(baggage, trace_id, request_id, span_id))
-    add("allstak-baggage", allstak_baggage(trace_id, request_id, span_id))
+    if normalized_span_id:
+        add("x-allstak-span-id", normalized_span_id)
+        add("traceparent", f"00-{normalized_trace_id}-{normalized_span_id}-{_trace_flags(sampled)}")
+    add("baggage", merge_baggage(baggage, normalized_trace_id, request_id, normalized_span_id))
+    add("allstak-baggage", allstak_baggage(normalized_trace_id, request_id, normalized_span_id))
     return existing

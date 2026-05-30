@@ -3,6 +3,49 @@
 All notable changes to the AllStak Python SDK.
 This project follows [Semantic Versioning](https://semver.org/).
 
+## 0.2.0 — 2026-05-30
+
+### Added
+- **Django app auto-wiring.** Adding `"allstak"` to `INSTALLED_APPS` now
+  auto-inserts `AllStakMiddleware` at the front of `settings.MIDDLEWARE` via an
+  `AppConfig` (`ready()`), so inbound request capture needs no manual middleware
+  registration. Default-on; opt out with `ALLSTAK = {"auto_middleware": False}`
+  (or the top-level `ALLSTAK_AUTO_MIDDLEWARE = False`). Idempotent — if the
+  middleware is already listed under either name, nothing is inserted. The
+  legacy `AllStakDjangoMiddleware` name is now an alias of the canonical
+  `AllStakMiddleware` class, so a `MIDDLEWARE` entry written against either name
+  works.
+- **Automatic logging bridge.** `allstak.init()` now auto-attaches the AllStak
+  logging handler to the root logger (gated by the new `capture_logs` flag,
+  default on), so standard-library log records flow to AllStak with no manual
+  `install_logging()` call. `ERROR`/`CRITICAL` records are promoted to the
+  errors stream — records carrying `exc_info` (`logger.exception(...)`) go up
+  with the exception + stack; `CRITICAL` is reported at `fatal` level.
+  Forwarded events are stamped with the active `traceId`/`spanId` and a
+  `requestId` read off the log record when a request-scoped filter set one.
+  Levels are tunable via `capture_logs_level` / `capture_logs_breadcrumb_level`
+  / `capture_logs_logger_name`. `install_logging()` stays public.
+- **FastAPI / Starlette zero-config auto-instrument.** `allstak.init()` now
+  auto-attaches the AllStak ASGI middleware to every FastAPI / Starlette app
+  (gated by the new `capture_fastapi` flag, default on), so inbound telemetry,
+  per-request trace context, and `5xx` error capture work with no
+  `AllStakFastAPI(app)` line. An app instrumented manually is never
+  double-wrapped.
+
+### Changed
+- Exceptions reported by a framework integration are now de-duplicated against
+  the logging bridge, so a framework's own follow-up `logger.error(..., exc_info=...)`
+  (e.g. Django's "Internal Server Error" log) is not re-reported as a second
+  error event. Framework control-flow exceptions (`Http404` / `PermissionDenied`
+  / `SuspiciousOperation`) logged by the framework are kept out of the error
+  stream by the bridge as well.
+
+### Compatibility
+- Fully backward compatible. All new behavior is default-on but individually
+  toggleable (`capture_logs`, `capture_fastapi`, `auto_middleware`) and existing
+  manual setup (`install_logging()`, `AllStakFastAPI(app)`, listing the
+  middleware by hand) keeps working unchanged.
+
 ## 0.1.4 — 2026-05-29
 
 ### Added

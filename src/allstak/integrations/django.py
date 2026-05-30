@@ -77,6 +77,22 @@ _SIGNAL_DISPATCH_UID = "allstak.django.got_request_exception"
 _signal_connected = False
 
 
+def _mark_exception_captured(exc: BaseException) -> None:
+    """Stamp ``exc`` so the logging bridge skips Django's follow-up error log.
+
+    Django logs the same unhandled exception via the ``django.request`` logger
+    (``ERROR ... exc_info``) right after the ``got_request_exception`` signal.
+    Marking the exception here prevents that log line from being re-reported as
+    a second error event. Fully fail-open.
+    """
+    try:
+        from .logging import mark_exception_captured
+
+        mark_exception_captured(exc)
+    except Exception:
+        pass
+
+
 def _exception_is_framework_4xx(exc: BaseException) -> bool:
     """Return True for exceptions Django maps to 4xx responses (not errors).
 
@@ -383,6 +399,7 @@ class AllStakMiddleware:
                 },
                 mechanism={"type": "django", "handled": False},
             )
+            _mark_exception_captured(exc)
             try:
                 setattr(request, _REPORTED_ATTR, True)
             except Exception:
@@ -511,6 +528,7 @@ def _on_got_request_exception(sender: Any = None, request: Any = None, **kwargs:
             },
             mechanism={"type": "django", "handled": False},
         )
+        _mark_exception_captured(exc)
         try:
             setattr(request, _REPORTED_ATTR, True)
         except Exception:
@@ -531,3 +549,16 @@ def _trace_id_from_meta(meta: object) -> Optional[str]:
         if value:
             return str(value)
     return None
+
+
+# Back-compat alias. Earlier docs referenced ``AllStakDjangoMiddleware`` while
+# the implemented class has always been :class:`AllStakMiddleware`. Both names
+# resolve to the same middleware so a ``MIDDLEWARE`` entry written against
+# either name keeps working. ``AllStakMiddleware`` is the canonical name.
+AllStakDjangoMiddleware = AllStakMiddleware
+
+# The dotted import path of the middleware, used by the AppConfig to auto-insert
+# it into ``settings.MIDDLEWARE`` and to de-duplicate against an entry the
+# developer may already have added under either name.
+_MIDDLEWARE_PATH = "allstak.integrations.django.AllStakMiddleware"
+_MIDDLEWARE_ALIAS_PATH = "allstak.integrations.django.AllStakDjangoMiddleware"
