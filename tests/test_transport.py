@@ -156,6 +156,24 @@ class TestTransportRetry:
         assert stats["eventsDropped"] == 1
 
     @respx.mock
+    def test_402_feature_gate_not_retried(self):
+        """Feature-gated telemetry is terminal, not an offline-retry wedge."""
+        route = respx.post(f"{BASE}/ingest/v1/spans").mock(
+            return_value=httpx.Response(
+                402,
+                json={"error": {"code": "FEATURE_NOT_AVAILABLE"}},
+            )
+        )
+        t = make_transport(max_retries=3)
+        with patch("time.sleep"):
+            status, _ = t.post("/ingest/v1/spans", {"spans": []})
+        assert status == 402
+        assert route.call_count == 1
+        stats = t.stats()
+        assert stats["eventsFailed"] == 1
+        assert stats["eventsDropped"] == 1
+
+    @respx.mock
     def test_400_not_retried(self):
         route = respx.post(f"{BASE}/ingest/v1/logs").mock(
             return_value=httpx.Response(400, json={"error": "bad request"})

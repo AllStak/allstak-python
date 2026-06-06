@@ -224,8 +224,10 @@ class ErrorModule:
                 # back to sending the already-sanitized event.
                 logger.debug("[AllStak] before_send raised (fail-open): %s", cb_err)
 
-        # 4. Sanitize again after before_send so hooks cannot reintroduce
+        # 4. Normalize fields that have a richer SDK-side shape but a flatter
+        # backend DTO, then sanitize again so hooks cannot reintroduce
         # credentials, cookies, tokens, card numbers, or private nested data.
+        event = self._normalize_backend_contract(event)
         wire_payload = self._sanitize_event(event)
         status, body = self._transport.post(_INGEST_PATH, wire_payload)
         if status == 202:
@@ -260,6 +262,30 @@ class ErrorModule:
         if isinstance(wire_payload, dict) and isinstance(event, dict) and "sessionId" in event:
             wire_payload["sessionId"] = event["sessionId"]
         return wire_payload if isinstance(wire_payload, dict) else event
+
+    @staticmethod
+    def _normalize_backend_contract(event: Dict[str, Any]) -> Dict[str, Any]:
+        """Map SDK-rich fields to the current backend ingest DTO.
+
+        Integrations use ``mechanism={"type": "...", "handled": false}``
+        internally because it is expressive and convenient for session status
+        handling. The DEV backend's current ``ErrorIngestRequest`` accepts
+        ``mechanism`` as a string and ``handled`` as a top-level boolean, so the
+        final wire payload must be flattened before transport.
+        """
+        out = dict(event)
+        mechanism = out.get("mechanism")
+        if isinstance(mechanism, dict):
+            mechanism_type = mechanism.get("type") or mechanism.get("name")
+            if mechanism_type is not None:
+                out["mechanism"] = str(mechanism_type)
+            else:
+                out.pop("mechanism", None)
+            if "handled" in mechanism and "handled" not in out:
+                out["handled"] = bool(mechanism.get("handled"))
+        elif mechanism is not None and not isinstance(mechanism, str):
+            out["mechanism"] = str(mechanism)
+        return out
 
     @staticmethod
     def _extract_stack_trace(exc: BaseException) -> List[str]:

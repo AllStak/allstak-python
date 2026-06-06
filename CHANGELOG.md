@@ -3,6 +3,14 @@
 All notable changes to the AllStak Python SDK.
 This project follows [Semantic Versioning](https://semver.org/).
 
+## 0.2.1 — 2026-06-06
+
+### Fixed
+- Flattened SDK-rich `mechanism` objects into the backend ingest contract's
+  top-level `mechanism` and `handled` fields before transport.
+- Treated terminal non-429 4xx ingest responses, including feature-gated `402`
+  responses, as non-retryable so offline replay cannot wedge permanently.
+
 ## 0.2.0 — 2026-05-30
 
 ### Added

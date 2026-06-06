@@ -254,4 +254,5 @@ def test_mechanism_reaches_wire_payload():
         mod.capture_exception(e, mechanism={"type": "excepthook", "handled": False})
 
     _, payload = transport.posts[0]
-    assert payload["mechanism"] == {"type": "excepthook", "handled": False}
+    assert payload["mechanism"] == "excepthook"
+    assert payload["handled"] is False

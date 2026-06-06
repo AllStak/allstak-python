@@ -5,7 +5,7 @@ Contract from SDK guidelines:
 - Connection timeout: 3s
 - Read timeout: 3s
 - Retry on: 5xx, 429, connection timeout, network error
-- No retry on: 400, 401, 403, 422
+- No retry on: 4xx except 429
 - Backoff: 1s → 2s → 4s → 8s  (+jitter 0–500ms each)
 - 429 / 503: honor ``Retry-After`` header (seconds or HTTP-date), clamped to 300s
 - Max 5 attempts
@@ -29,8 +29,8 @@ import httpx
 
 logger = logging.getLogger("allstak.sdk")
 
-# HTTP status codes we NEVER retry — these 4xx are client errors
-# Guidelines explicitly list 400, 401, 403, 422 but 404 is equally non-retryable.
+# HTTP status codes we NEVER retry — 4xx responses are client/plan/validation
+# errors, except 429 which is backpressure and must honor Retry-After.
 # 429 (Too Many Requests) is explicitly NOT in this set — it is retryable with
 # backpressure (Retry-After), so it must not be silently dropped.
 _NO_RETRY_4XX = True  # 4xx responses are non-retryable, EXCEPT 429
@@ -246,8 +246,13 @@ class HttpTransport:
                         "AllStak SDK: invalid API key — SDK disabled for this session"
                     )
 
-                # 4xx client errors → no retry (except 401 handled above)
-                if last_status in _NO_RETRY_STATUSES:
+                # 4xx client/plan errors → no retry (except 401 handled above
+                # and 429 rate limiting handled below). This covers 402
+                # feature-gated telemetry so offline replay can drop the
+                # terminal entry instead of retrying it forever.
+                if last_status in _NO_RETRY_STATUSES or (
+                    _NO_RETRY_4XX and 400 <= last_status < 500 and last_status != 429
+                ):
                     self._increment_stat("eventsFailed")
                     self._increment_stat("eventsDropped")
                     logger.debug(
